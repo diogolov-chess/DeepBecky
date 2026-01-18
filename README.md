@@ -1,5 +1,9 @@
 # Deep Becky - UCI Chess Engine
 
+<p align="center">
+  <img src="assets/deepbecky-logo.png" alt="Deep Becky Logo" width="200"/>
+</p>
+
 **Version / Versão:** 0.1  
 **Author / Autor:** Diogo de Oliveira Almeida  
 **Language / Linguagem:** C++  
