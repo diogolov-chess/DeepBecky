@@ -87,9 +87,48 @@ Complete UCI (Universal Chess Interface) protocol implementation:
 
 ### How to Compile
 
+#### Windows (MSVC - Recommended)
+
+Using the provided batch file (generates standalone ~344KB executable):
 ```bash
-g++ -O3 -std=c++11 deepbecky01.cpp -o deepbecky
+build_avx2.bat
 ```
+
+**Requirements:** Visual Studio 2022 with C++ tools
+
+**Manual compilation:**
+```bash
+# Open "x64 Native Tools Command Prompt for VS 2022"
+cl /nologo /EHsc /Ox /arch:AVX2 /GL /Gy /Gw /GF /Oi /Ob2 /DNDEBUG /MT /std:c++20 deepbecky01.cpp /link /LTCG /OPT:REF /OPT:ICF
+```
+
+---
+
+#### Linux / macOS / MinGW (GCC/Clang)
+
+**Dynamic linking (smaller executable, requires system libraries):**
+```bash
+g++ -O3 -std=c++17 deepbecky01.cpp -o deepbecky
+```
+
+**Static linking (larger executable, fully portable):**
+```bash
+g++ -O3 -std=c++17 -static -static-libgcc -static-libstdc++ deepbecky01.cpp -o deepbecky
+```
+
+**With AVX2 support (faster on modern CPUs):**
+```bash
+g++ -O3 -std=c++17 -march=native deepbecky01.cpp -o deepbecky
+```
+
+---
+
+#### Notes
+
+- **C++17 or higher required**
+- The MSVC build produces a smaller standalone executable (~344KB) compared to GCC static linking (~1-2MB)
+- For tournament/benchmark use, avoid UPX compression (already disabled in `build_avx2.bat`)
+
 
 ### How to Use
 
@@ -201,10 +240,47 @@ Implementação completa do protocolo UCI (Universal Chess Interface):
 
 ### Como Compilar
 
+#### Windows (MSVC - Recomendado)
+
+Usando o arquivo .bat fornecido (gera executável independente de ~344KB):
 ```bash
-g++ -O3 -std=c++11 deepbecky01.cpp -o deepbecky
+build_avx2.bat
 ```
-Ou executando build_avx2.bat
+
+**Requisitos:** Visual Studio 2022 com ferramentas C++
+
+**Compilação manual:**
+```bash
+# Abra o "Prompt de Comando de Ferramentas Nativas x64 do VS 2022"
+cl /nologo /EHsc /Ox /arch:AVX2 /GL /Gy /Gw /GF /Oi /Ob2 /DNDEBUG /MT /std:c++20 deepbecky01.cpp /link /LTCG /OPT:REF /OPT:ICF
+```
+
+---
+
+#### Linux / macOS / MinGW (GCC/Clang)
+
+**Linkagem dinâmica (executável menor, requer bibliotecas do sistema):**
+```bash
+g++ -O3 -std=c++17 deepbecky01.cpp -o deepbecky
+```
+
+**Linkagem estática (executável maior, totalmente portátil):**
+```bash
+g++ -O3 -std=c++17 -static -static-libgcc -static-libstdc++ deepbecky01.cpp -o deepbecky
+```
+
+**Com suporte AVX2 (mais rápido em CPUs modernas):**
+```bash
+g++ -O3 -std=c++17 -march=native deepbecky01.cpp -o deepbecky
+```
+
+---
+
+#### Observações
+
+- **C++17 ou superior necessário**
+- A compilação MSVC produz um executável independente menor (~344KB) comparado à linkagem estática do GCC (~1-2MB)
+- Para uso em torneios/benchmarks, evite compressão UPX (já desativada no `build_avx2.bat`)
 
 ### Como Usar
 
