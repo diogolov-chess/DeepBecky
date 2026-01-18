@@ -51,7 +51,7 @@ title Build deepbecky01 (MSVC x64 - speed+size+compat)
 pushd "%~dp0"
 
 REM ---- CONFIG
-set "PROJECT=deepbecky01"
+set "PROJECT=deepbecky-v0.1-windows-x64"
 set "OUTDIR=build"
 set "SOURCES=*.cpp"
 
