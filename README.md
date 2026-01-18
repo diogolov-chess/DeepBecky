@@ -10,7 +10,7 @@
 
 </td>
 <td>
-<img src="images/logo-deepbecky.png" alt="Deep Becky Logo" width="200"/>
+<img src="assets/logo-deepbecky.png" alt="Deep Becky Logo" width="200"/>
 </td>
 </tr>
 </table>
