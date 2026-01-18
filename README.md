@@ -1,7 +1,7 @@
 # Deep Becky - UCI Chess Engine
 
 <p align="center">
-  <img src="assets/logo-deepbecky.png" alt="Deep Becky Logo" width="200"/>
+  <img src="images/logo-deepbecky.png" alt="Deep Becky Logo" width="200"/>
 </p>
 
 **Version / Versão:** 0.1  
