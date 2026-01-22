@@ -1,9 +1,10 @@
 <div align="center">
 
-<img src="assets/logo-deepbecky.png" alt="Deep Becky Logo" width="200"/>
+<img src="assets/logo-deepbecky.png" alt="Deep Becky Logo" width="150"/>
+
 <h3>Deep Becky - UCI Chess Engine</h3>
+
 Estimated Elo rating of 1850 for version 0.2 on Lichess.org
-<br>
 <br>
 
 SEE THE <strong>[LATEST VERSION UPDATE!][changelog]</strong>
