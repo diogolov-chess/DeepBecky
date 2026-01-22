@@ -156,4 +156,6 @@ Este projeto demonstra as capacidades atuais de desenvolvimento de software assi
 **Nota:** Deep Becky é um projeto experimental criado com assistência de IA para fins educacionais e de pesquisa.
 
 
-[changelog]:          https://github.com/diogolov-chess/DeepBecky/blob/main/CHANGELOG.md
+[changelog]:          https://github.com/diogolov-chess/DeepBecky/releases/latest
+
+
