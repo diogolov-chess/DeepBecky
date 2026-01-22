@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 
 REM ======================================================
-REM Build deepbecky01 - "um modo" (speed + size + compat)
+REM Build deepbecky02 - "um modo" (speed + size + compat)
 REM - Compatibilidade: Windows x64 qualquer (sem VC++ Redist) => /MT
 REM - Performance: /Ox /arch:AVX2 + /GL (LTCG) + /OPT:REF/ICF
 REM - Tamanho: /Gy /Gw /GF + /LTCG + /OPT:REF/ICF
@@ -47,11 +47,11 @@ exit /b 0
 :BUILD
 REM ======================== PARTE DE BUILD ==========================
 if /I "%~1"=="--inner" shift
-title Build deepbecky01 (MSVC x64 - speed+size+compat)
+title Build deepbecky02 (MSVC x64 - speed+size+compat)
 pushd "%~dp0"
 
 REM ---- CONFIG
-set "PROJECT=deepbecky-v0.1-windows-x64"
+set "PROJECT=deepbecky-v0.2-windows-x64"
 set "OUTDIR=build"
 set "SOURCES=*.cpp"
 
@@ -65,7 +65,7 @@ REM ---- Linker (LTO + remoção maxima)
 set "LDFLAGS=/link /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO"
 
 REM ---- UPX (desligado por padrao p/ torneio)
-set "USE_UPX=0"
+set "USE_UPX=1"
 
 if not exist "%OUTDIR%" mkdir "%OUTDIR%" >nul 2>&1
 
