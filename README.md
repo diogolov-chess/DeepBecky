@@ -1,22 +1,11 @@
-# Deep Becky - UCI Chess Engine
+<div align="center">
 
 <img src="assets/logo-deepbecky.png" alt="Deep Becky Logo" width="200"/>
+ 
+  <h3>Deep Becky - UCI Chess Engine</h3>
+ 
+</div>
 
-<table>
-<tr>
-<td>
-
-**Version / Versão:** 0.1  
-**Author / Autor:** Diogo de Oliveira Almeida  
-**Language / Linguagem:** C++  
-**License / Licença:** GNU GPL 3.0
-
-</td>
-<td>
-<img src="assets/logo-deepbecky.png" alt="Deep Becky Logo" width="200"/>
-</td>
-</tr>
-</table>
 
 ---
 
