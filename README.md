@@ -1,4 +1,7 @@
 # Deep Becky - UCI Chess Engine
+
+<img src="assets/logo-deepbecky.png" alt="Deep Becky Logo" width="200"/>
+
 <table>
 <tr>
 <td>
