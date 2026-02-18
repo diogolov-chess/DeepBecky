@@ -54,16 +54,16 @@ make PROFILE=native                 # best for your local CPU
 
 **With PGO (Profile-Guided Optimization) for maximum strength:**
 ```bash
-UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make profile-build PROFILE=bmi2 LTO_JOBS=6
+UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make profile-build PROFILE=bmi2 LTO_JOBS=8
 ```
 
 **Or step by step:**
 ```bash
 # Step 1: PGO instrumented build + run profiling workload
-UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make -f Makefile pgo-gen PROFILE=bmi2 LTO_JOBS=6
+UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make -f Makefile pgo-gen PROFILE=bmi2 LTO_JOBS=8
 
 # Step 2: Rebuild using collected profile data
-make -f Makefile pgo-use PROFILE=bmi2 LTO_JOBS=6
+make -f Makefile pgo-use PROFILE=bmi2 LTO_JOBS=8
 ```
 
 **Other useful targets:**
@@ -187,16 +187,16 @@ make PROFILE=native                 # melhor para sua CPU local
 
 **Com PGO (Profile-Guided Optimization) para força máxima:**
 ```bash
-UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make profile-build PROFILE=bmi2 LTO_JOBS=6
+UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make profile-build PROFILE=bmi2 LTO_JOBS=8
 ```
 
 **Ou passo a passo:**
 ```bash
 # Passo 1: Build instrumentado PGO + execução para coleta de perfis
-UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make -f Makefile pgo-gen PROFILE=bmi2 LTO_JOBS=6
+UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make -f Makefile pgo-gen PROFILE=bmi2 LTO_JOBS=8
 
 # Passo 2: Rebuild usando os dados de perfil coletados
-make -f Makefile pgo-use PROFILE=bmi2 LTO_JOBS=6
+make -f Makefile pgo-use PROFILE=bmi2 LTO_JOBS=8
 ```
 
 **Outros targets úteis:**
