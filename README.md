@@ -3,14 +3,15 @@
 <img src="assets/logo-deepbecky.png" alt="Deep Becky Logo" width="150"/>
 
 <h3>Deep Becky - UCI Chess Engine</h3>
-
 Version 1.0 — Full Bitboard + Magic Bitboards
 <br>
 
 SEE THE <strong>[LATEST VERSION UPDATE!][changelog]</strong>
+<br><br>
+<a href="https://lichess.org/@/DeepBecky" target="_blank">
+    ♟ BOT Deep Becky on Lichess.org
 
 </div>
-
 
 ---
 
@@ -279,5 +280,3 @@ Este projeto demonstra as capacidades atuais de desenvolvimento de software assi
 
 
 [changelog]:          https://github.com/diogolov-chess/DeepBecky/releases/latest
-
-
