@@ -4,7 +4,7 @@
 
 <h3>Deep Becky - UCI Chess Engine</h3>
 
-Estimated Elo rating of 1850 for version 0.2 on Lichess.org
+Version 1.0 — Full Bitboard + Magic Bitboards
 <br>
 
 SEE THE <strong>[LATEST VERSION UPDATE!][changelog]</strong>
@@ -24,40 +24,98 @@ Development began around July 2025 using conversations with ChatGPT to create th
 
 The path was quite challenging - copying code from chat conversations to Notepad, attempting to compile, facing countless compilation errors, and when it finally compiled, dealing with recognition issues in Fritz. After many attempts and corrections, going through engines that weren't recognized, didn't make moves, or made illegal moves, I finally achieved functional code that respects all chess rules.
 
+Version 1.0 represents a major rewrite: the board representation was changed from a simple 8×8 array to a **full bitboard** system with **Magic Bitboards** for sliding pieces, the engine was split into multiple source files, and the evaluation was vastly expanded with pawn structure, king safety, knight outposts, and proper tapered MG/EG scoring. See the [CHANGELOG](CHANGELOG.md) for full details.
+
 ### How to Compile
 
-#### Windows (MSVC - Recommended)
+#### Windows CMD (MinGW-w64 standalone)
 
-Using the provided batch file (generates standalone ~344KB executable):
+If you have MinGW-w64 installed and available in the system PATH, you can compile directly from the Windows **Command Prompt (cmd)**:
+
 ```bash
-build_avx2.bat
-```
-
-**Requirements:** Visual Studio 2022 with C++ tools
-
-**Manual compilation:**
-```bash
-# Open "x64 Native Tools Command Prompt for VS 2022"
-cl /nologo /EHsc /Ox /arch:AVX2 /GL /Gy /Gw /GF /Oi /Ob2 /DNDEBUG /MT /std:c++20 deepbecky02.cpp /link /LTCG /OPT:REF /OPT:ICF
+mingw32-make                        # portable build (default)
+mingw32-make PROFILE=avx2           # AVX2 optimized build
+mingw32-make PROFILE=bmi2           # AVX2 + BMI2 build
+mingw32-make PROFILE=native         # best for your local CPU
 ```
 
 ---
 
-#### Linux / macOS / MinGW (GCC/Clang)
+#### MSYS2 MinGW-w64 (Recommended for PGO)
 
-**Dynamic linking (smaller executable, requires system libraries):**
+Using the provided Makefile from the **MSYS2 MINGW64** shell:
+
 ```bash
-g++ -O3 -std=c++17 deepbecky02.cpp -o deepbecky
+make                                # portable build (default, x86-64 generic)
+make PROFILE=avx2                   # AVX2 optimized build
+make PROFILE=bmi2                   # AVX2 + BMI2 build
+make PROFILE=native                 # best for your local CPU
 ```
 
-**Static linking (larger executable, fully portable):**
+**With PGO (Profile-Guided Optimization) for maximum strength:**
 ```bash
-g++ -O3 -std=c++17 -static -static-libgcc -static-libstdc++ deepbecky02.cpp -o deepbecky
+UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make profile-build PROFILE=bmi2 LTO_JOBS=6
 ```
 
-**With AVX2 support (faster on modern CPUs):**
+**Or step by step:**
 ```bash
-g++ -O3 -std=c++17 -march=native deepbecky02.cpp -o deepbecky
+# Step 1: PGO instrumented build + run profiling workload
+UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make -f Makefile pgo-gen PROFILE=bmi2 LTO_JOBS=6
+
+# Step 2: Rebuild using collected profile data
+make -f Makefile pgo-use PROFILE=bmi2 LTO_JOBS=6
+```
+
+**Other useful targets:**
+```bash
+make clean                          # remove build artifacts
+make distclean                      # remove build + PGO data
+make info                           # show current build configuration
+```
+
+**Requirements:** MSYS2 with `mingw-w64-x86_64-gcc` package installed. Run from the **MSYS2 MINGW64** shell.
+
+---
+
+#### Windows (MSVC)
+
+Using the **x64 Native Tools Command Prompt for VS 2022**:
+
+```bash
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+```
+
+**Without AVX2 (broader compatibility):**
+```bash
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+```
+
+**Requirements:** Visual Studio 2022 with C++ tools
+
+---
+
+#### Linux / macOS (GCC/Clang)
+
+The Makefile works natively on Linux and macOS:
+
+```bash
+make                                # portable build
+make PROFILE=native                 # native optimized
+```
+
+**With PGO:**
+```bash
+UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make profile-build PROFILE=native
+```
+
+**Manual compilation (without Makefile):**
+```bash
+g++ -O3 -std=c++17 -march=native -DNDEBUG -flto main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp -o deepbecky
+```
+
+**Static linking (fully portable binary):**
+```bash
+g++ -O3 -std=c++17 -march=native -DNDEBUG -flto -static -static-libgcc -static-libstdc++ main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp -o deepbecky
 ```
 
 ---
@@ -65,8 +123,9 @@ g++ -O3 -std=c++17 -march=native deepbecky02.cpp -o deepbecky
 #### Notes
 
 - **C++17 or higher required**
-- The MSVC build produces a smaller standalone executable (~344KB) compared to GCC static linking (~1-2MB)
-- For tournament/benchmark use, avoid UPX compression (already disabled in `build_avx2.bat`)
+- The Makefile enables **LTO** (Link-Time Optimization) and **static linking** by default
+- **PGO builds** can provide ~5-10% speed improvement (requires MSYS2 or Linux/macOS shell)
+- Available profiles: `portable` (default), `avx2`, `bmi2`, `native`
 
 
 ### How to Use
@@ -98,40 +157,98 @@ O desenvolvimento começou por volta de julho de 2025, utilizando conversas com 
 
 O caminho foi bastante desafiador - copiando código das conversas para o Notepad, tentando compilar, enfrentando inúmeros erros de compilação e, quando finalmente compilava, lidando com problemas de reconhecimento no Fritz. Depois de muitas tentativas e correções, passando por engines que não eram reconhecidas, que não faziam movimentos, ou que faziam lances ilegais, finalmente consegui um código funcional que respeita todas as regras do xadrez.
 
+A versão 1.0 representa uma reescrita significativa: a representação do tabuleiro foi alterada de um simples array 8×8 para um sistema completo de **bitboards** com **Magic Bitboards** para peças deslizantes, a engine foi dividida em múltiplos arquivos fonte, e a avaliação foi vastamente expandida com estrutura de peões, segurança do rei, postos avançados de cavalos, e pontuação tapered MG/EG correta. Veja o [CHANGELOG](CHANGELOG.md) para detalhes completos.
+
 ### Como Compilar
 
-#### Windows (MSVC - Recomendado)
+#### Windows CMD (MinGW-w64 standalone)
 
-Usando o arquivo .bat fornecido (gera executável independente de ~344KB):
+Se você tem o MinGW-w64 instalado e disponível no PATH do sistema, pode compilar diretamente pelo **Prompt de Comando (cmd)** do Windows:
+
 ```bash
-build_avx2.bat
-```
-
-**Requisitos:** Visual Studio 2022 com ferramentas C++
-
-**Compilação manual:**
-```bash
-# Abra o "Prompt de Comando de Ferramentas Nativas x64 do VS 2022"
-cl /nologo /EHsc /Ox /arch:AVX2 /GL /Gy /Gw /GF /Oi /Ob2 /DNDEBUG /MT /std:c++20 deepbecky02.cpp /link /LTCG /OPT:REF /OPT:ICF
+mingw32-make                        # build portátil (padrão)
+mingw32-make PROFILE=avx2           # build otimizado para AVX2
+mingw32-make PROFILE=bmi2           # build AVX2 + BMI2
+mingw32-make PROFILE=native         # melhor para sua CPU local
 ```
 
 ---
 
-#### Linux / macOS / MinGW (GCC/Clang)
+#### MSYS2 MinGW-w64 (Recomendado para PGO)
 
-**Linkagem dinâmica (executável menor, requer bibliotecas do sistema):**
+Usando o Makefile fornecido no shell **MSYS2 MINGW64**:
+
 ```bash
-g++ -O3 -std=c++17 deepbecky02.cpp -o deepbecky
+make                                # build portátil (padrão, x86-64 genérico)
+make PROFILE=avx2                   # build otimizado para AVX2
+make PROFILE=bmi2                   # build AVX2 + BMI2
+make PROFILE=native                 # melhor para sua CPU local
 ```
 
-**Linkagem estática (executável maior, totalmente portátil):**
+**Com PGO (Profile-Guided Optimization) para força máxima:**
 ```bash
-g++ -O3 -std=c++17 -static -static-libgcc -static-libstdc++ deepbecky02.cpp -o deepbecky
+UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make profile-build PROFILE=bmi2 LTO_JOBS=6
 ```
 
-**Com suporte AVX2 (mais rápido em CPUs modernas):**
+**Ou passo a passo:**
 ```bash
-g++ -O3 -std=c++17 -march=native deepbecky02.cpp -o deepbecky
+# Passo 1: Build instrumentado PGO + execução para coleta de perfis
+UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make -f Makefile pgo-gen PROFILE=bmi2 LTO_JOBS=6
+
+# Passo 2: Rebuild usando os dados de perfil coletados
+make -f Makefile pgo-use PROFILE=bmi2 LTO_JOBS=6
+```
+
+**Outros targets úteis:**
+```bash
+make clean                          # remove artefatos de build
+make distclean                      # remove build + dados PGO
+make info                           # mostra configuração atual de build
+```
+
+**Requisitos:** MSYS2 com pacote `mingw-w64-x86_64-gcc` instalado. Execute no shell **MSYS2 MINGW64**.
+
+---
+
+#### Windows (MSVC)
+
+Usando o **Prompt de Comando de Ferramentas Nativas x64 do VS 2022**:
+
+```bash
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+```
+
+**Sem AVX2 (compatibilidade mais ampla):**
+```bash
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+```
+
+**Requisitos:** Visual Studio 2022 com ferramentas C++
+
+---
+
+#### Linux / macOS (GCC/Clang)
+
+O Makefile funciona nativamente no Linux e macOS:
+
+```bash
+make                                # build portátil
+make PROFILE=native                 # otimizado nativo
+```
+
+**Com PGO:**
+```bash
+UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make profile-build PROFILE=native
+```
+
+**Compilação manual (sem Makefile):**
+```bash
+g++ -O3 -std=c++17 -march=native -DNDEBUG -flto main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp -o deepbecky
+```
+
+**Linkagem estática (binário totalmente portátil):**
+```bash
+g++ -O3 -std=c++17 -march=native -DNDEBUG -flto -static -static-libgcc -static-libstdc++ main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp -o deepbecky
 ```
 
 ---
@@ -139,8 +256,9 @@ g++ -O3 -std=c++17 -march=native deepbecky02.cpp -o deepbecky
 #### Observações
 
 - **C++17 ou superior necessário**
-- A compilação MSVC produz um executável independente menor (~344KB) comparado à linkagem estática do GCC (~1-2MB)
-- Para uso em torneios/benchmarks, evite compressão UPX (já desativada no `build_avx2.bat`)
+- O Makefile habilita **LTO** (Link-Time Optimization) e **linkagem estática** por padrão
+- **Builds PGO** podem fornecer ~5-10% de melhoria de velocidade (requer MSYS2 ou shell Linux/macOS)
+- Perfis disponíveis: `portable` (padrão), `avx2`, `bmi2`, `native`
 
 ### Como Usar
 
