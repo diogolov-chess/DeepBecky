@@ -1,6 +1,10 @@
+# Deep Becky - Changelog
+
+---
 
 # Deep Becky 1.0
 
+---
 
 # 🇬🇧 English Version
 
@@ -763,5 +767,3 @@ g++ -O3 -std=c++17 -march=native -DNDEBUG deepbecky02.cpp -o deepbecky-v0.2-wind
 ---
 
 *Deep Becky - UCI Chess Engine by Diogo de Oliveira Almeida*
-
-
