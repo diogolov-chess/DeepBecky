@@ -3,7 +3,7 @@
 <img src="assets/logo-deepbecky.png" alt="Deep Becky Logo" width="150"/>
 
 <h3>Deep Becky - UCI Chess Engine</h3>
-Version 1.0 — Full Bitboard + Magic Bitboards
+Version 1.1 — Draw-Avoidance + Search Improvements
 <br>
 
 SEE THE <strong>[LATEST VERSION UPDATE!][changelog]</strong>
@@ -25,7 +25,15 @@ Development began around July 2025 using conversations with ChatGPT to create th
 
 The path was quite challenging - copying code from chat conversations to Notepad, attempting to compile, facing countless compilation errors, and when it finally compiled, dealing with recognition issues in Fritz. After many attempts and corrections, going through engines that weren't recognized, didn't make moves, or made illegal moves, I finally achieved functional code that respects all chess rules.
 
-Version 1.0 represents a major rewrite: the board representation was changed from a simple 8×8 array to a **full bitboard** system with **Magic Bitboards** for sliding pieces, the engine was split into multiple source files, and the evaluation was vastly expanded with pawn structure, king safety, knight outposts, and proper tapered MG/EG scoring. See the [CHANGELOG](CHANGELOG.md) for full details.
+Version 1.1 builds on the major 1.0 rewrite (full bitboards + magic bitboards) and focuses on practical playing strength and draw handling. The engine now includes robust draw detection (threefold repetition, 50-move, and insufficient material), proactive repetition-cycle handling in search, and **contempt** to avoid unnecessary draws when better positions are available. Move ordering and search internals were also upgraded (MovePicker + SEE, improved TT replacement and generation handling), with stronger UCI/FEN robustness.
+
+Main v1.1 highlights:
+- Draw handling: threefold repetition, 50-move rule, insufficient material, and cycle detection
+- Draw avoidance: contempt evaluation (+/-20 cp from root side perspective)
+- Search ordering: staged MovePicker (TT move, good captures, killers, quiets, bad captures)
+- SEE (Static Exchange Evaluation) integrated for capture quality filtering
+- Internal performance refactor: compact packed move representation and fixed-size move buffers
+- Safer parsing: stronger `setFEN()` validation and case-insensitive UCI command parsing
 
 ### How to Compile
 
@@ -83,12 +91,12 @@ make info                           # show current build configuration
 Using the **x64 Native Tools Command Prompt for VS 2022**:
 
 ```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.1-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
 ```
 
 **Without AVX2 (broader compatibility):**
 ```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.1-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
 ```
 
 **Requirements:** Visual Studio 2022 with C++ tools
@@ -158,7 +166,15 @@ O desenvolvimento começou por volta de julho de 2025, utilizando conversas com 
 
 O caminho foi bastante desafiador - copiando código das conversas para o Notepad, tentando compilar, enfrentando inúmeros erros de compilação e, quando finalmente compilava, lidando com problemas de reconhecimento no Fritz. Depois de muitas tentativas e correções, passando por engines que não eram reconhecidas, que não faziam movimentos, ou que faziam lances ilegais, finalmente consegui um código funcional que respeita todas as regras do xadrez.
 
-A versão 1.0 representa uma reescrita significativa: a representação do tabuleiro foi alterada de um simples array 8×8 para um sistema completo de **bitboards** com **Magic Bitboards** para peças deslizantes, a engine foi dividida em múltiplos arquivos fonte, e a avaliação foi vastamente expandida com estrutura de peões, segurança do rei, postos avançados de cavalos, e pontuação tapered MG/EG correta. Veja o [CHANGELOG](CHANGELOG.md) para detalhes completos.
+A versão 1.1 evolui a grande reescrita da 1.0 (bitboards completos + magic bitboards) com foco em força prática e tratamento de empates. A engine agora inclui detecção robusta de empate (tripla repetição, regra dos 50 lances e material insuficiente), tratamento preventivo de ciclos de repetição durante a busca e **contempt** para evitar empates desnecessários quando a posição é favorável. A ordenação de lances e a busca também foram fortalecidas (MovePicker + SEE, melhoria de geração/substituição da TT), além de parser UCI/FEN mais robusto.
+
+Principais destaques da v1.1:
+- Tratamento de empate: tripla repetição, regra dos 50 lances, material insuficiente e detecção de ciclos
+- Evitar empates: contempt na avaliação (+/-20 cp a partir da perspectiva do lado na raiz)
+- Ordenação de busca: MovePicker em estágios (lance da TT, boas capturas, killers, quiets, capturas ruins)
+- SEE (Static Exchange Evaluation) integrado para filtrar qualidade de capturas
+- Refatoração interna de performance: representação compacta de lance e buffers fixos de movimentos
+- Parsing mais seguro: validação mais forte em `setFEN()` e comandos UCI case-insensitive
 
 ### Como Compilar
 
@@ -216,12 +232,12 @@ make info                           # mostra configuração atual de build
 Usando o **Prompt de Comando de Ferramentas Nativas x64 do VS 2022**:
 
 ```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.1-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
 ```
 
 **Sem AVX2 (compatibilidade mais ampla):**
 ```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.1-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
 ```
 
 **Requisitos:** Visual Studio 2022 com ferramentas C++

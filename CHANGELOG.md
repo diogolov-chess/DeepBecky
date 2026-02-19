@@ -2,6 +2,108 @@
 
 ---
 
+# Deep Becky 1.1
+
+---
+
+# 🇬🇧 English Version
+
+## Improvements over version 1.0
+
+### 🎯 Draw Detection and Draw Avoidance
+
+- Added robust draw handling in search:
+    - threefold repetition detection
+    - 50-move rule detection
+    - insufficient material detection
+- Added cycle detection (`hasGameCycle`) to identify upcoming repetition loops.
+- Added **contempt** (`+/-20 cp` from root side perspective) so the engine avoids unnecessary draws when a better result is available.
+- Added draw scoring by node parity (`drawScore`) to reduce deterministic draw bias.
+
+---
+
+### 🔍 Search and Move Ordering
+
+- New staged **MovePicker** ordering:
+    - TT move
+    - good captures (SEE >= 0)
+    - killer moves
+    - quiet moves by history
+    - bad captures
+- Added **SEE (Static Exchange Evaluation)** in engine core and integrated into move ordering / qsearch filtering.
+- TT handling improved with generation-aware replacement policy (`TTGeneration`) and refined probing/store behavior.
+- TT cutoffs are now constrained near 50-move draw range (`halfmove < 90`) to reduce draw-rule instability.
+
+---
+
+### ⚙️ Core Engine and Robustness
+
+- Reworked move representation to compact packed format (`squares + flags`) and helper accessors (`moveFrom`, `moveTo`, etc.).
+- Replaced dynamic move vectors in hot paths with fixed-size move buffers (`MAX_MOVES`) for lower overhead.
+- Replaced dynamic undo vector with fixed stack (`undoStack`) for predictable performance.
+- `setFEN()` now returns `bool` and validates malformed FEN fields more strictly.
+- UCI parser made case-insensitive for better interoperability (`uci`, `position`, `go`, etc.).
+- UCI output now reports mate scores in `score mate N` format when applicable.
+- Added legal-move fallback if TT best move is missing at the end of search.
+
+---
+
+### 🛠 Build
+
+- Updated default binary name in Makefile to:
+    - `deepbecky-v1.1-windows-x64.exe`
+
+---
+
+# 🇧🇷 Versão em Português
+
+## Melhorias em relação à versão 1.0
+
+### 🎯 Detecção de Empate e Estratégia para Evitar Empates
+
+- Adicionado tratamento robusto de empate na busca:
+    - detecção de tripla repetição
+    - detecção da regra dos 50 lances
+    - detecção de material insuficiente
+- Adicionada detecção de ciclos (`hasGameCycle`) para identificar repetições iminentes.
+- Adicionado **contempt** (`+/-20 cp` na perspectiva do lado na raiz) para evitar empates desnecessários quando houver posição melhor.
+- Adicionado score de empate por paridade de nós (`drawScore`) para reduzir viés determinístico em empates.
+
+---
+
+### 🔍 Busca e Ordenação de Lances
+
+- Nova ordenação em estágios com **MovePicker**:
+    - lance da TT
+    - boas capturas (SEE >= 0)
+    - killers
+    - quiets por histórico
+    - capturas ruins
+- **SEE (Static Exchange Evaluation)** adicionado ao núcleo e integrado à ordenação / filtragem da quiescência.
+- TT aprimorada com política de substituição sensível à geração (`TTGeneration`) e ajustes de probe/store.
+- Cortes por TT agora são limitados perto da faixa da regra dos 50 lances (`halfmove < 90`) para reduzir instabilidade.
+
+---
+
+### ⚙️ Núcleo e Robustez da Engine
+
+- Representação de lances refeita para formato compacto (`squares + flags`) com helpers (`moveFrom`, `moveTo`, etc.).
+- Vetores dinâmicos de lances removidos dos hot paths e substituídos por buffers fixos (`MAX_MOVES`).
+- Vetor dinâmico de undo substituído por pilha fixa (`undoStack`) para desempenho previsível.
+- `setFEN()` agora retorna `bool` e valida FEN inválida com mais rigor.
+- Parser UCI agora é case-insensitive para melhor interoperabilidade (`uci`, `position`, `go`, etc.).
+- Saída UCI passa a reportar mate no formato `score mate N` quando aplicável.
+- Adicionado fallback para lance legal quando não há melhor lance válido vindo da TT ao fim da busca.
+
+---
+
+### 🛠 Build
+
+- Nome padrão do binário no Makefile atualizado para:
+    - `deepbecky-v1.1-windows-x64.exe`
+
+---
+
 # Deep Becky 1.0
 
 ---
