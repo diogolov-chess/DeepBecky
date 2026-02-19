@@ -4,7 +4,7 @@
 
 SHELL     := /usr/bin/bash
 CXX       ?= g++
-TARGET    ?= deepbecky-v1.0-windows-x64.exe
+TARGET    ?= deepbecky-v1.1-windows-x64.exe
 SRC       := main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp
 BUILD_DIR ?= build
 PGO_DIR   ?= pgo-data

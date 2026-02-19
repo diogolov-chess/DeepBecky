@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.0 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida
+ * This file is part of Deep Becky 1.1 - A UCI Chess Engine written by AI
+ * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -132,7 +132,7 @@ static inline int pstBlackEG(int p, int sqi){
 }
 
 
-// ============ Avaliação (VERSÃO BITBOARD) ============
+// ============ Avaliação ============
 
 int DeepBeckyEngine::evaluate(){
     // ---------- Helpers ----------
@@ -488,6 +488,12 @@ int DeepBeckyEngine::evaluate(){
 
     // ---------- 50-move rule damping ----------
     score -= score * halfmove / 212;
+
+    // ---------- Contempt (avoid draws) ----------
+    // Contempt is from White's perspective (set at root of search)
+    // Positive contempt makes White avoid draws, negative makes Black avoid draws
+    // Always add contempt BEFORE converting to side-to-move perspective
+    score += contempt;
 
     // Return from side to move perspective
     return white_to_move ? score : -score;

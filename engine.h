@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.0 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida
+ * This file is part of Deep Becky 1.1 - A UCI Chess Engine written by AI
+ * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -67,6 +67,10 @@ constexpr int MATE_SCORE  = 29000;
 constexpr int MATE_IN_MAX = 28000;
 constexpr int MAX_PLY     = 64;
 constexpr int TT_SIZE     = 1 << 22; // ~4M entradas
+constexpr int MAX_MOVES   = 256;
+constexpr int MAX_STACK   = 4096;
+constexpr int DRAW_REJECT_MARGIN = 50; // centipawns threshold to decline draw when better
+constexpr int DRAW_DECLINE_PENALTY = 10000; // MASSIVE penalty for unwanted draw
 
 // ========================= Peças =========================
 enum Piece {
@@ -84,21 +88,37 @@ inline int  pieceColor(int p){ if(p==EMPTY) return -1; return isWhitePiece(p)?WH
 
 // ========================= Movimentos =========================
 struct Move {
-    int from_x=0, from_y=0, to_x=0, to_y=0;
-    int promotion=0;
-    bool is_capture=false, is_enpassant=false, is_castle=false, is_doublepush=false;
-    int score=0;
-
-    // Adicionado para facilitar o makeMove/undoMove
-    int piece_moved=EMPTY;
-    int captured_piece=EMPTY;
+    uint16_t squares = 0; // bits 0-5: origem, 6-11: destino
+    uint8_t  flags   = 0; // bits 0-3: flags, 4-7: promoção (piece code)
+    int score = 0;
 
     bool operator==(const Move& o) const {
-        return from_x==o.from_x && from_y==o.from_y && to_x==o.to_x && to_y==o.to_y &&
-               promotion==o.promotion;
+        return squares == o.squares && flags == o.flags;
     }
 };
-static const Move MOVE_NONE;
+inline constexpr Move MOVE_NONE{};
+
+constexpr uint8_t MOVE_FLAG_CAPTURE    = 1u << 0;
+constexpr uint8_t MOVE_FLAG_ENPASSANT  = 1u << 1;
+constexpr uint8_t MOVE_FLAG_CASTLE     = 1u << 2;
+constexpr uint8_t MOVE_FLAG_DOUBLEPUSH = 1u << 3;
+constexpr uint8_t MOVE_PROMO_SHIFT     = 4u;
+constexpr uint8_t MOVE_PROMO_MASK      = 0xF0u;
+
+inline int moveFrom(const Move& m){ return m.squares & 63; }
+inline int moveTo(const Move& m){ return (m.squares >> 6) & 63; }
+inline bool moveIsCapture(const Move& m){ return (m.flags & MOVE_FLAG_CAPTURE) != 0; }
+inline bool moveIsEnPassant(const Move& m){ return (m.flags & MOVE_FLAG_ENPASSANT) != 0; }
+inline bool moveIsCastle(const Move& m){ return (m.flags & MOVE_FLAG_CASTLE) != 0; }
+inline bool moveIsDoublePush(const Move& m){ return (m.flags & MOVE_FLAG_DOUBLEPUSH) != 0; }
+inline int movePromotion(const Move& m){ return (m.flags & MOVE_PROMO_MASK) >> MOVE_PROMO_SHIFT; }
+inline bool moveIsNone(const Move& m){ return m.squares == 0 && m.flags == 0; }
+inline Move makeMovePacked(uint16_t data, uint8_t flags){ Move m; m.squares=data; m.flags=flags; m.score=0; return m; }
+
+constexpr uint8_t TT_GEN_BITS = 6;
+constexpr uint8_t TT_FLAG_BITS = 2;
+constexpr uint8_t TT_FLAG_MASK = (1u << TT_FLAG_BITS) - 1u;
+constexpr uint8_t TT_GEN_MASK  = ((1u << TT_GEN_BITS) - 1u) << TT_FLAG_BITS;
 
 // ========================= Zobrist =========================
 struct Zobrist {
@@ -111,13 +131,28 @@ extern Zobrist ZOB;
 // ========================= TT =========================
 enum TTFlag { TT_EXACT=0, TT_ALPHA=1, TT_BETA=2 };
 struct TTEntry {
-    uint64_t key;
-    int16_t  score;
-    int8_t   depth;
-    int8_t   flag;
-    Move     best;
+    uint64_t key=0;
+    uint16_t moveData=0;
+    uint8_t  moveFlags=0;
+    int16_t  score=0;
+    int8_t   depth=0;
+    uint8_t  genBound=0;
+    uint8_t  pad=0;
+
+    Move bestMove() const { return makeMovePacked(moveData, moveFlags); }
+    uint8_t flag() const { return genBound & TT_FLAG_MASK; }
+    uint8_t generation() const { return genBound >> TT_FLAG_BITS; }
+    void store(uint64_t newKey, int newDepth, int newScore, uint8_t newFlag, const Move& move, uint8_t generation) {
+        key = newKey;
+        depth = static_cast<int8_t>(newDepth);
+        score = static_cast<int16_t>(newScore);
+        moveData = move.squares;
+        moveFlags = move.flags;
+        genBound = static_cast<uint8_t>((generation << TT_FLAG_BITS) | (newFlag & TT_FLAG_MASK));
+    }
 };
 extern TTEntry TT[TT_SIZE];
+extern uint8_t TTGeneration;
 
 // ========================= Heurísticas =========================
 struct KillerTable {
@@ -132,6 +167,7 @@ extern int history_heur[2][64][64];
 inline int sq(int x,int y){ return y*8 + x; }
 inline int sq_x(int s){ return s % 8; }
 inline int sq_y(int s){ return s / 8; }
+inline bool isLightSquare(int s){ return ((sq_x(s) + sq_y(s)) & 1) == 0; }
 inline bool onBoard(int x,int y){ return x>=0 && x<8 && y>=0 && y<8; }
 
 // ========================= Avaliação =========================
@@ -150,7 +186,6 @@ void initAttackTables();
 // ========================= Engine principal =========================
 class DeepBeckyEngine {
 public:
-    // ==== NOVA REPRESENTAÇÃO DE TABULEIRO (FULL BITBOARD) ====
     U64 bitboards[13]{};        // Bitboard para cada tipo de peça
     U64 color_bitboards[2]{};   // Bitboard para WHITE e BLACK
     int piece_board[64]{};      // Mailbox para O(1) lookup de peça
@@ -162,6 +197,17 @@ public:
     int halfmove=0, fullmove=1;
     uint64_t hash=0;
 
+    struct RepState {
+        uint64_t key = 0;
+        int repetition = 0;
+    };
+    std::vector<RepState> repetitionHistory;
+    int plies_since_null = 0;
+
+    // Search state
+    int contempt = 0;  // Contempt value (from White's perspective)
+    bool rootSideIsWhite = true;  // Side to move at root of search
+
     // Search
     long long nodes=0; // Alterado para long long para evitar overflow
     bool stop=false;
@@ -172,21 +218,31 @@ public:
     unordered_map<string, vector<string>> opening_book;
 
     struct Undo {
-        int castling_before, ep_before, half_before;
-        uint64_t hash_before;
+        int castling_before = 0;
+        int ep_before = 0;
+        int half_before = 0;
+        int fullmove_before = 0;
+        uint64_t hash_before = 0;
+        int captured_piece = EMPTY;
+        int moved_piece = EMPTY;
+        size_t repIndexBefore = 0;
+        int repetition_before = 0;
+        int plies_from_null_before = 0;
+        bool was_null = false;
     };
-    vector<Undo> undo;
+    Undo undoStack[MAX_STACK];
+    int undoTop = 0;
 
     DeepBeckyEngine();
 
     void run();
     void setStartPos();
-    void setFEN(const string &fen);
+    bool setFEN(const string &fen);
 
-    vector<Move> generateLegal();
-    vector<Move> generatePseudo(bool capturesOnly=false);
-    bool isAttacked(int s, bool byWhite);
-    bool inCheck(bool whiteSide);
+    int generateLegal(Move* moves);
+    int generatePseudo(Move* moves, bool capturesOnly=false);
+    bool isAttacked(int s, bool byWhite) const;
+    bool inCheck(bool whiteSide) const;
     void makeMove(const Move& m);
     void undoMove(const Move& m);
     void makeNullMove();
@@ -197,8 +253,8 @@ public:
     int pvs(int depth, int ply, int alpha, int beta);
     int qsearch(int alpha, int beta, int ply);
 
-    void scoreMoves(vector<Move>& mv, const Move& ttMove, int ply);
     int evaluate();
+    int see(const Move& m) const;
 
     std::vector<Move> getPV(int maxDepth);
     std::string pvToString(const std::vector<Move>& pv);
@@ -206,11 +262,17 @@ public:
     string moveToUCI(const Move& m) const;
     Move uciToMove(const string& s);
     uint64_t computeHash() const;
-    void clearTT(){ for(int i=0;i<TT_SIZE;i++) TT[i]=TTEntry(); }
+    void clearTT();
     void clearHeuristics(){ memset(history_heur,0,sizeof(history_heur)); killers.clear(); }
     string bookKey() const;
     bool timeUp() const;
     void initBook();
+    bool isFiftyMoveDraw() const;
+    bool isThreefoldRepetition() const;
+    bool isThreefoldRepetition(int ply) const;
+    bool isInsufficientMaterial() const;
+    bool isDraw(int ply);
+    bool hasGameCycle(int ply) const;
 };
 
 #endif // DeepBecky_ENGINE_H

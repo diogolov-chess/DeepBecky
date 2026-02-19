@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.0 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida
+ * This file is part of Deep Becky 1.1 - A UCI Chess Engine written by AI
+ * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,8 +15,8 @@
 
 #include "engine.h"
 
-// ============ Cheque/ataque (VERSÃO BITBOARD) ============
-bool DeepBeckyEngine::isAttacked(int s, bool byWhite){
+// ============ Cheque/ataque ============
+bool DeepBeckyEngine::isAttacked(int s, bool byWhite) const{
     U64 pawns   = byWhite ? bitboards[WPAWN]   : bitboards[BPAWN];
     U64 knights = byWhite ? bitboards[WKNIGHT] : bitboards[BKNIGHT];
     U64 bishops = byWhite ? bitboards[WBISHOP] : bitboards[BBISHOP];
@@ -36,7 +36,7 @@ bool DeepBeckyEngine::isAttacked(int s, bool byWhite){
     return false;
 }
 
-bool DeepBeckyEngine::inCheck(bool whiteSide){
+bool DeepBeckyEngine::inCheck(bool whiteSide) const{
     return isAttacked(king_sq[whiteSide ? WHITE : BLACK], !whiteSide);
 }
 
@@ -48,61 +48,37 @@ bool DeepBeckyEngine::legalMove(const Move& m){
     return ok;
 }
 
-// ============ Gerar movimentos (VERSÃO BITBOARD) ============
-vector<Move> DeepBeckyEngine::generatePseudo(bool capturesOnly){
-    vector<Move> mv; mv.reserve(64);
-    
+// ============ Gerar movimentos ============
+int DeepBeckyEngine::generatePseudo(Move* mv, bool capturesOnly){
+    int count = 0;
+
     int us = white_to_move ? WHITE : BLACK;
-    int them = !us;
+    int them = us ^ 1;
 
     U64 my_pieces = color_bitboards[us];
     U64 opp_pieces = color_bitboards[them];
     U64 all_pieces = my_pieces | opp_pieces;
     U64 empty_squares = ~all_pieces;
 
-    auto add_moves = [&](int from_sq, U64 attack_bb, int piece) {
-        while(attack_bb){
-            int to_sq = pop_lsb(&attack_bb);
-            Move m;
-            m.from_x = sq_x(from_sq); m.from_y = sq_y(from_sq);
-            m.to_x = sq_x(to_sq);   m.to_y = sq_y(to_sq);
-            m.piece_moved = piece;
-            m.captured_piece = piece_board[to_sq];
-            m.is_capture = (m.captured_piece != EMPTY);
-            mv.push_back(m);
-        }
-    };
-    
-    auto add_pawn_moves = [&](int from_sq, int to_sq, int piece, bool is_double, bool is_ep) {
-        int promo_rank = us == WHITE ? 7 : 0;
-        if (sq_y(to_sq) == promo_rank) {
-            int promos[] = {us==WHITE?WQUEEN:BQUEEN, us==WHITE?WROOK:BROOK, us==WHITE?WBISHOP:BBISHOP, us==WHITE?WKNIGHT:BKNIGHT};
-            for(int p : promos){
-                Move m;
-                m.from_x = sq_x(from_sq); m.from_y = sq_y(from_sq);
-                m.to_x = sq_x(to_sq); m.to_y = sq_y(to_sq);
-                m.piece_moved = piece;
-                m.captured_piece = is_ep ? (us==WHITE?BPAWN:WPAWN) : piece_board[to_sq];
-                m.is_capture = (m.captured_piece != EMPTY);
-                m.promotion = p;
-                mv.push_back(m);
-            }
-        } else {
-            Move m;
-            m.from_x = sq_x(from_sq); m.from_y = sq_y(from_sq);
-            m.to_x = sq_x(to_sq); m.to_y = sq_y(to_sq);
-            m.piece_moved = piece;
-            m.captured_piece = is_ep ? (us==WHITE?BPAWN:WPAWN) : piece_board[to_sq];
-            m.is_capture = (m.captured_piece != EMPTY);
-            m.is_enpassant = is_ep;
-            m.is_doublepush = is_double;
-            mv.push_back(m);
-        }
+    auto push_move = [&](int from_sq, int to_sq, bool capture, bool enpassant, bool castle, bool doublepush, int promotion){
+        if(count >= MAX_MOVES) return;
+        if(capturesOnly && !capture && promotion == 0) return;
+        Move m;
+        m.squares = static_cast<uint16_t>((to_sq << 6) | from_sq);
+        uint8_t flags = 0;
+        if(capture) flags |= MOVE_FLAG_CAPTURE;
+        if(enpassant) flags |= MOVE_FLAG_ENPASSANT;
+        if(castle) flags |= MOVE_FLAG_CASTLE;
+        if(doublepush) flags |= MOVE_FLAG_DOUBLEPUSH;
+        if(promotion != 0) flags |= static_cast<uint8_t>(promotion << MOVE_PROMO_SHIFT);
+        m.flags = flags;
+        m.score = 0;
+        mv[count++] = m;
     };
 
     // Peças deslizantes e saltadoras
     const int piece_types[] = {
-        us==WHITE?WKNIGHT:BKNIGHT, us==WHITE?WBISHOP:BBISHOP, us==WHITE?WROOK:BROOK, 
+        us==WHITE?WKNIGHT:BKNIGHT, us==WHITE?WBISHOP:BBISHOP, us==WHITE?WROOK:BROOK,
         us==WHITE?WQUEEN:BQUEEN, us==WHITE?WKING:BKING
     };
 
@@ -118,205 +94,221 @@ vector<Move> DeepBeckyEngine::generatePseudo(bool capturesOnly){
                 case WQUEEN:  case BQUEEN:  attacks = Magic::bishopAttacks(from_sq, all_pieces) | Magic::rookAttacks(from_sq, all_pieces); break;
                 case WKING:   case BKING:   attacks = KING_ATK_BB[from_sq]; break;
             }
-            add_moves(from_sq, attacks & (capturesOnly ? opp_pieces : ~my_pieces), piece);
-        }
-    }
-
-    
-    
-    // Peões (fast-path com bit operations: sem loop por peão)
-    {
-        constexpr U64 FILE_A = 0x0101010101010101ULL;
-        constexpr U64 FILE_H = 0x8080808080808080ULL;
-        constexpr U64 RANK_2 = 0x000000000000FF00ULL;
-        constexpr U64 RANK_1 = 0x00000000000000FFULL;
-        constexpr U64 RANK_8 = 0xFF00000000000000ULL;
-        constexpr U64 RANK_7 = 0x00FF000000000000ULL;
-
-        const int pawn_piece = us == WHITE ? WPAWN : BPAWN;
-        U64 pawns = bitboards[pawn_piece];
-
-        if (us == WHITE){
-            if(!capturesOnly){
-                // Avanço simples
-                U64 oneStep = (pawns << 8) & empty_squares;
-                // Quiet (sem promoção)
-                U64 quietPush = oneStep & ~RANK_8;
-                U64 q = quietPush;
-                while(q){
-                    int to = pop_lsb(&q);
-                    int from = to - 8;
-                    add_pawn_moves(from, to, pawn_piece, false, false);
-                }
-                // Promoção por avanço
-                U64 promoPush = oneStep & RANK_8;
-                U64 pp = promoPush;
-                while(pp){
-                    int to = pop_lsb(&pp);
-                    int from = to - 8;
-                    add_pawn_moves(from, to, pawn_piece, false, false);
-                }
-                // Avanço duplo da 2ª fileira (ambas casas vazias)
-                U64 mid = ((pawns & RANK_2) << 8) & empty_squares;
-                U64 twoStep = (mid << 8) & empty_squares;
-                U64 t = twoStep;
-                while(t){
-                    int to = pop_lsb(&t);
-                    int from = to - 16;
-                    add_pawn_moves(from, to, pawn_piece, true, false);
-                }
-            }
-            // Capturas separadas (evita perda quando duas peças atacam mesmo destino)
-            U64 capL = ((pawns & ~FILE_A) << 7) & opp_pieces; // NW
-            U64 capR = ((pawns & ~FILE_H) << 9) & opp_pieces; // NE
-
-            // Não-promocionais
-            U64 nl = capL & ~RANK_8;
-            while(nl){
-                int to = pop_lsb(&nl);
-                int from = to - 7;
-                add_pawn_moves(from, to, pawn_piece, false, false);
-            }
-            U64 nr = capR & ~RANK_8;
-            while(nr){
-                int to = pop_lsb(&nr);
-                int from = to - 9;
-                add_pawn_moves(from, to, pawn_piece, false, false);
-            }
-            // Capturas com promoção
-            U64 pl = capL & RANK_8;
-            while(pl){
-                int to = pop_lsb(&pl);
-                int from = to - 7;
-                add_pawn_moves(from, to, pawn_piece, false, false);
-            }
-            U64 pr = capR & RANK_8;
-            while(pr){
-                int to = pop_lsb(&pr);
-                int from = to - 9;
-                add_pawn_moves(from, to, pawn_piece, false, false);
-            }
-
-            // En passant
-            if(ep_file > 0){
-                int ep_sq = sq(ep_file - 1, 5); // destino do EP para as brancas
-                U64 ep = 1ULL << ep_sq;
-                U64 fromL = (pawns & ~FILE_A) & (ep >> 7);
-                U64 fromR = (pawns & ~FILE_H) & (ep >> 9);
-                U64 f = fromL | fromR;
-                while(f){
-                    int from = pop_lsb(&f);
-                    add_pawn_moves(from, ep_sq, pawn_piece, false, true);
-                }
-            }
-        } else {
-            if(!capturesOnly){
-                // Avanço simples
-                U64 oneStep = (pawns >> 8) & empty_squares;
-                // Quiet (sem promoção)
-                U64 quietPush = oneStep & ~RANK_1;
-                U64 q = quietPush;
-                while(q){
-                    int to = pop_lsb(&q);
-                    int from = to + 8;
-                    add_pawn_moves(from, to, pawn_piece, false, false);
-                }
-                // Promoção por avanço
-                U64 promoPush = oneStep & RANK_1;
-                U64 pp = promoPush;
-                while(pp){
-                    int to = pop_lsb(&pp);
-                    int from = to + 8;
-                    add_pawn_moves(from, to, pawn_piece, false, false);
-                }
-                // Avanço duplo da 7ª fileira
-                U64 mid = ((pawns & RANK_7) >> 8) & empty_squares;
-                U64 twoStep = (mid >> 8) & empty_squares;
-                U64 t = twoStep;
-                while(t){
-                    int to = pop_lsb(&t);
-                    int from = to + 16;
-                    add_pawn_moves(from, to, pawn_piece, true, false);
-                }
-            }
-            // Capturas separadas
-            U64 capR = ((pawns & ~FILE_H) >> 7) & opp_pieces; // SE (do ponto de vista do tabuleiro)
-            U64 capL = ((pawns & ~FILE_A) >> 9) & opp_pieces; // SW
-
-            // Não-promocionais
-            U64 nr = capR & ~RANK_1;
-            while(nr){
-                int to = pop_lsb(&nr);
-                int from = to + 7;
-                add_pawn_moves(from, to, pawn_piece, false, false);
-            }
-            U64 nl = capL & ~RANK_1;
-            while(nl){
-                int to = pop_lsb(&nl);
-                int from = to + 9;
-                add_pawn_moves(from, to, pawn_piece, false, false);
-            }
-            // Capturas com promoção
-            U64 pr = capR & RANK_1;
-            while(pr){
-                int to = pop_lsb(&pr);
-                int from = to + 7;
-                add_pawn_moves(from, to, pawn_piece, false, false);
-            }
-            U64 pl = capL & RANK_1;
-            while(pl){
-                int to = pop_lsb(&pl);
-                int from = to + 9;
-                add_pawn_moves(from, to, pawn_piece, false, false);
-            }
-
-            // En passant
-            if(ep_file > 0){
-                int ep_sq = sq(ep_file - 1, 2); // destino do EP para as pretas
-                U64 ep = 1ULL << ep_sq;
-                U64 fromR = (pawns & ~FILE_H) & (ep << 7);
-                U64 fromL = (pawns & ~FILE_A) & (ep << 9);
-                U64 f = fromR | fromL;
-                while(f){
-                    int from = pop_lsb(&f);
-                    add_pawn_moves(from, ep_sq, pawn_piece, false, true);
-                }
+            U64 targets = capturesOnly ? (attacks & opp_pieces) : (attacks & ~my_pieces);
+            while(targets){
+                int to_sq = pop_lsb(&targets);
+                bool capture = ((opp_pieces >> to_sq) & 1ULL) != 0;
+                push_move(from_sq, to_sq, capture, false, false, false, 0);
             }
         }
     }
-// Roque
+
+    // Peões
+    constexpr U64 FILE_A = 0x0101010101010101ULL;
+    constexpr U64 FILE_H = 0x8080808080808080ULL;
+    constexpr U64 RANK_2 = 0x000000000000FF00ULL;
+    constexpr U64 RANK_1 = 0x00000000000000FFULL;
+    constexpr U64 RANK_8 = 0xFF00000000000000ULL;
+    constexpr U64 RANK_7 = 0x00FF000000000000ULL;
+
+    const int pawn_piece = us == WHITE ? WPAWN : BPAWN;
+    U64 pawns = bitboards[pawn_piece];
+    const int promoPieces[4] = {
+        us==WHITE ? WQUEEN : BQUEEN,
+        us==WHITE ? WROOK  : BROOK,
+        us==WHITE ? WBISHOP: BBISHOP,
+        us==WHITE ? WKNIGHT: BKNIGHT
+    };
+
+    if (us == WHITE){
+        if(!capturesOnly){
+            U64 oneStep = (pawns << 8) & empty_squares;
+            U64 quietPush = oneStep & ~RANK_8;
+            U64 q = quietPush;
+            while(q){
+                int to = pop_lsb(&q);
+                int from = to - 8;
+                push_move(from, to, false, false, false, false, 0);
+            }
+            U64 promoPush = oneStep & RANK_8;
+            U64 pp = promoPush;
+            while(pp){
+                int to = pop_lsb(&pp);
+                int from = to - 8;
+                for(int p : promoPieces){
+                    push_move(from, to, false, false, false, false, p);
+                }
+            }
+            U64 mid = ((pawns & RANK_2) << 8) & empty_squares;
+            U64 twoStep = (mid << 8) & empty_squares;
+            U64 t = twoStep;
+            while(t){
+                int to = pop_lsb(&t);
+                int from = to - 16;
+                push_move(from, to, false, false, false, true, 0);
+            }
+        }
+
+        U64 capL = ((pawns & ~FILE_A) << 7) & opp_pieces;
+        U64 capR = ((pawns & ~FILE_H) << 9) & opp_pieces;
+
+        U64 nl = capL & ~RANK_8;
+        while(nl){
+            int to = pop_lsb(&nl);
+            int from = to - 7;
+            push_move(from, to, true, false, false, false, 0);
+        }
+        U64 nr = capR & ~RANK_8;
+        while(nr){
+            int to = pop_lsb(&nr);
+            int from = to - 9;
+            push_move(from, to, true, false, false, false, 0);
+        }
+
+        U64 pl = capL & RANK_8;
+        while(pl){
+            int to = pop_lsb(&pl);
+            int from = to - 7;
+            for(int p : promoPieces){
+                push_move(from, to, true, false, false, false, p);
+            }
+        }
+        U64 pr = capR & RANK_8;
+        while(pr){
+            int to = pop_lsb(&pr);
+            int from = to - 9;
+            for(int p : promoPieces){
+                push_move(from, to, true, false, false, false, p);
+            }
+        }
+
+        if(ep_file > 0){
+            int ep_sq = sq(ep_file - 1, 5);
+            U64 ep = 1ULL << ep_sq;
+            U64 fromL = (pawns & ~FILE_A) & (ep >> 7);
+            U64 fromR = (pawns & ~FILE_H) & (ep >> 9);
+            U64 f = fromL | fromR;
+            while(f){
+                int from = pop_lsb(&f);
+                push_move(from, ep_sq, true, true, false, false, 0);
+            }
+        }
+    } else {
+        if(!capturesOnly){
+            U64 oneStep = (pawns >> 8) & empty_squares;
+            U64 quietPush = oneStep & ~RANK_1;
+            U64 q = quietPush;
+            while(q){
+                int to = pop_lsb(&q);
+                int from = to + 8;
+                push_move(from, to, false, false, false, false, 0);
+            }
+            U64 promoPush = oneStep & RANK_1;
+            U64 pp = promoPush;
+            while(pp){
+                int to = pop_lsb(&pp);
+                int from = to + 8;
+                for(int p : promoPieces){
+                    push_move(from, to, false, false, false, false, p);
+                }
+            }
+            U64 mid = ((pawns & RANK_7) >> 8) & empty_squares;
+            U64 twoStep = (mid >> 8) & empty_squares;
+            U64 t = twoStep;
+            while(t){
+                int to = pop_lsb(&t);
+                int from = to + 16;
+                push_move(from, to, false, false, false, true, 0);
+            }
+        }
+
+        U64 capR = ((pawns & ~FILE_H) >> 7) & opp_pieces;
+        U64 capL = ((pawns & ~FILE_A) >> 9) & opp_pieces;
+
+        U64 nr = capR & ~RANK_1;
+        while(nr){
+            int to = pop_lsb(&nr);
+            int from = to + 7;
+            push_move(from, to, true, false, false, false, 0);
+        }
+        U64 nl = capL & ~RANK_1;
+        while(nl){
+            int to = pop_lsb(&nl);
+            int from = to + 9;
+            push_move(from, to, true, false, false, false, 0);
+        }
+
+        U64 pr = capR & RANK_1;
+        while(pr){
+            int to = pop_lsb(&pr);
+            int from = to + 7;
+            for(int p : promoPieces){
+                push_move(from, to, true, false, false, false, p);
+            }
+        }
+        U64 pl = capL & RANK_1;
+        while(pl){
+            int to = pop_lsb(&pl);
+            int from = to + 9;
+            for(int p : promoPieces){
+                push_move(from, to, true, false, false, false, p);
+            }
+        }
+
+        if(ep_file > 0){
+            int ep_sq = sq(ep_file - 1, 2);
+            U64 ep = 1ULL << ep_sq;
+            U64 fromR = (pawns & ~FILE_H) & (ep << 7);
+            U64 fromL = (pawns & ~FILE_A) & (ep << 9);
+            U64 f = fromR | fromL;
+            while(f){
+                int from = pop_lsb(&f);
+                push_move(from, ep_sq, true, true, false, false, 0);
+            }
+        }
+    }
+
     if(!capturesOnly && !inCheck(white_to_move)){
         if(us==WHITE){
-            if((castling & 8) && !(all_pieces & 0x60ULL) && !isAttacked(5, (them==WHITE)) && !isAttacked(6, (them==WHITE))){
-                Move m; m.from_x=4;m.from_y=0;m.to_x=6;m.to_y=0;m.is_castle=true;m.piece_moved=WKING; mv.push_back(m);
+            if((castling & 8) && !(all_pieces & 0x60ULL) && !isAttacked(5, them==WHITE) && !isAttacked(6, them==WHITE)){
+                int from_sq = sq(4,0);
+                int to_sq = sq(6,0);
+                push_move(from_sq, to_sq, false, false, true, false, 0);
             }
-            if((castling & 4) && !(all_pieces & 0xEULL) && !isAttacked(3, (them==WHITE)) && !isAttacked(2, (them==WHITE))){
-                Move m; m.from_x=4;m.from_y=0;m.to_x=2;m.to_y=0;m.is_castle=true;m.piece_moved=WKING; mv.push_back(m);
+            if((castling & 4) && !(all_pieces & 0xEULL) && !isAttacked(3, them==WHITE) && !isAttacked(2, them==WHITE)){
+                int from_sq = sq(4,0);
+                int to_sq = sq(2,0);
+                push_move(from_sq, to_sq, false, false, true, false, 0);
             }
         } else {
-             if((castling & 2) && !(all_pieces & 0x6000000000000000ULL) && !isAttacked(61, (them==WHITE)) && !isAttacked(62, (them==WHITE))){
-                Move m; m.from_x=4;m.from_y=7;m.to_x=6;m.to_y=7;m.is_castle=true;m.piece_moved=BKING; mv.push_back(m);
+            if((castling & 2) && !(all_pieces & 0x6000000000000000ULL) && !isAttacked(61, them==WHITE) && !isAttacked(62, them==WHITE)){
+                int from_sq = sq(4,7);
+                int to_sq = sq(6,7);
+                push_move(from_sq, to_sq, false, false, true, false, 0);
             }
-            if((castling & 1) && !(all_pieces & 0xE00000000000000ULL) && !isAttacked(59, (them==WHITE)) && !isAttacked(58, (them==WHITE))){
-                Move m; m.from_x=4;m.from_y=7;m.to_x=2;m.to_y=7;m.is_castle=true;m.piece_moved=BKING; mv.push_back(m);
+            if((castling & 1) && !(all_pieces & 0x0E00000000000000ULL) && !isAttacked(59, them==WHITE) && !isAttacked(58, them==WHITE)){
+                int from_sq = sq(4,7);
+                int to_sq = sq(2,7);
+                push_move(from_sq, to_sq, false, false, true, false, 0);
             }
         }
     }
 
-    return mv;
+    return count;
 }
 
 
-vector<Move> DeepBeckyEngine::generateLegal(){
-    vector<Move> pseudo = generatePseudo(false);
-    vector<Move> legal;
-    legal.reserve(pseudo.size());
-    for(auto &m : pseudo){
+int DeepBeckyEngine::generateLegal(Move* moves){
+    Move pseudo[MAX_MOVES];
+    int pseudoCount = generatePseudo(pseudo, false);
+    int legalCount = 0;
+    for(int i=0;i<pseudoCount;++i){
+        Move& m = pseudo[i];
         makeMove(m);
         if(!inCheck(!white_to_move)) {
-            legal.push_back(m);
+            moves[legalCount++] = m;
         }
         undoMove(m);
     }
-    return legal;
+    return legalCount;
 }
