@@ -3,7 +3,7 @@
 <img src="assets/logo-deepbecky.png" alt="Deep Becky Logo" width="150"/>
 
 <h3>Deep Becky - UCI Chess Engine</h3>
-Version 1.1 — Draw-Avoidance + Search Improvements
+Version 1.2 — Architectural Restructure + Advanced Search & Time Management
 <br>
 
 SEE THE <strong>[LATEST VERSION UPDATE!][changelog]</strong>
@@ -25,15 +25,19 @@ Development began around July 2025 using conversations with ChatGPT to create th
 
 The path was quite challenging - copying code from chat conversations to Notepad, attempting to compile, facing countless compilation errors, and when it finally compiled, dealing with recognition issues in Fritz. After many attempts and corrections, going through engines that weren't recognized, didn't make moves, or made illegal moves, I finally achieved functional code that respects all chess rules.
 
-Version 1.1 builds on the major 1.0 rewrite (full bitboards + magic bitboards) and focuses on practical playing strength and draw handling. The engine now includes robust draw detection (threefold repetition, 50-move, and insufficient material), proactive repetition-cycle handling in search, and **contempt** to avoid unnecessary draws when better positions are available. Move ordering and search internals were also upgraded (MovePicker + SEE, improved TT replacement and generation handling), with stronger UCI/FEN robustness.
+Version 1.2 is a **major architectural restructure** of the engine, splitting the codebase from 8 files into **25 files** with proper header/implementation separation and dedicated modules for each subsystem. The search was significantly strengthened with many new pruning techniques (razoring, reverse futility, late move pruning, IID, SEE pruning), a pre-computed logarithmic LMR table, and dynamic contempt that scales from 20 to 200 cp based on evaluation. A professional Stockfish-style **TimeManagement** class handles time allocation with stability/score-drop adjustments, obvious move detection, and game phase awareness. The **TranspositionTable** now supports dynamic sizing via UCI `Hash` option (1–4096 MB) with cache-aligned allocation and prefetching. New bitboard infrastructure (BETWEEN_BB, LINE_BB, RAY_BB) enables pin-aware legal move generation and faster check evasion.
 
-Main v1.1 highlights:
-- Draw handling: threefold repetition, 50-move rule, insufficient material, and cycle detection
-- Draw avoidance: contempt evaluation (+/-20 cp from root side perspective)
-- Search ordering: staged MovePicker (TT move, good captures, killers, quiets, bad captures)
-- SEE (Static Exchange Evaluation) integrated for capture quality filtering
-- Internal performance refactor: compact packed move representation and fixed-size move buffers
-- Safer parsing: stronger `setFEN()` validation and case-insensitive UCI command parsing
+Main v1.2 highlights:
+- Full architectural restructure: 25 files with proper H/CPP separation and namespaces
+- Search: LMR log table, razoring, reverse futility pruning, IID, late move pruning, futility pruning, SEE pruning
+- Dynamic contempt: scales 20–200 cp based on evaluation advantage
+- Stockfish-style TimeManagement: optimum/maximum time, stability adjustment, obvious move detection
+- Configurable TT: dynamic Hash sizing (1–4096 MB), cache-aligned, prefetch, hashfull reporting
+- Bitboard infrastructure: BETWEEN_BB, LINE_BB, RAY_BB for pin detection and check evasion
+- Pawn hash table: caches pawn structure evaluation for efficiency
+- Lazy evaluation: skips detailed eval when material advantage is decisive (non-endgame)
+- Perft command for correctness testing
+- GPL v3 license headers on all source files
 
 ### How to Compile
 
@@ -63,16 +67,16 @@ make PROFILE=native                 # best for your local CPU
 
 **With PGO (Profile-Guided Optimization) for maximum strength:**
 ```bash
-UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make profile-build PROFILE=bmi2 LTO_JOBS=8
+make pgo PROFILE=bmi2
 ```
 
 **Or step by step:**
 ```bash
 # Step 1: PGO instrumented build + run profiling workload
-UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make -f Makefile pgo-gen PROFILE=bmi2 LTO_JOBS=8
+make pgo-gen PROFILE=bmi2
 
 # Step 2: Rebuild using collected profile data
-make -f Makefile pgo-use PROFILE=bmi2 LTO_JOBS=8
+make pgo-use PROFILE=bmi2
 ```
 
 **Other useful targets:**
@@ -91,12 +95,12 @@ make info                           # show current build configuration
 Using the **x64 Native Tools Command Prompt for VS 2022**:
 
 ```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.1-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp /Fe:deepbecky-v1.2-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
 ```
 
 **Without AVX2 (broader compatibility):**
 ```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.1-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp /Fe:deepbecky-v1.2-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
 ```
 
 **Requirements:** Visual Studio 2022 with C++ tools
@@ -114,17 +118,17 @@ make PROFILE=native                 # native optimized
 
 **With PGO:**
 ```bash
-UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make profile-build PROFILE=native
+make pgo PROFILE=native
 ```
 
 **Manual compilation (without Makefile):**
 ```bash
-g++ -O3 -std=c++17 -march=native -DNDEBUG -flto main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp -o deepbecky
+g++ -O3 -std=c++17 -march=native -DNDEBUG -flto main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp -o deepbecky
 ```
 
 **Static linking (fully portable binary):**
 ```bash
-g++ -O3 -std=c++17 -march=native -DNDEBUG -flto -static -static-libgcc -static-libstdc++ main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp -o deepbecky
+g++ -O3 -std=c++17 -march=native -DNDEBUG -flto -static -static-libgcc -static-libstdc++ main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp -o deepbecky
 ```
 
 ---
@@ -134,7 +138,7 @@ g++ -O3 -std=c++17 -march=native -DNDEBUG -flto -static -static-libgcc -static-l
 - **C++17 or higher required**
 - The Makefile enables **LTO** (Link-Time Optimization) and **static linking** by default
 - **PGO builds** can provide ~5-10% speed improvement (requires MSYS2 or Linux/macOS shell)
-- Available profiles: `portable` (default), `avx2`, `bmi2`, `native`
+- Available profiles: `portable` (default), `sse42`, `avx2`, `bmi2`, `native`
 
 
 ### How to Use
@@ -166,15 +170,19 @@ O desenvolvimento começou por volta de julho de 2025, utilizando conversas com 
 
 O caminho foi bastante desafiador - copiando código das conversas para o Notepad, tentando compilar, enfrentando inúmeros erros de compilação e, quando finalmente compilava, lidando com problemas de reconhecimento no Fritz. Depois de muitas tentativas e correções, passando por engines que não eram reconhecidas, que não faziam movimentos, ou que faziam lances ilegais, finalmente consegui um código funcional que respeita todas as regras do xadrez.
 
-A versão 1.1 evolui a grande reescrita da 1.0 (bitboards completos + magic bitboards) com foco em força prática e tratamento de empates. A engine agora inclui detecção robusta de empate (tripla repetição, regra dos 50 lances e material insuficiente), tratamento preventivo de ciclos de repetição durante a busca e **contempt** para evitar empates desnecessários quando a posição é favorável. A ordenação de lances e a busca também foram fortalecidas (MovePicker + SEE, melhoria de geração/substituição da TT), além de parser UCI/FEN mais robusto.
+A versão 1.2 é uma **grande reestruturação arquitetural** da engine, dividindo o código de 8 para **25 arquivos** com separação adequada header/implementação e módulos dedicados para cada subsistema. A busca foi significativamente fortalecida com muitas novas técnicas de poda (razoring, reverse futility, late move pruning, IID, poda SEE), tabela LMR logarítmica pré-computada e contempt dinâmico que escala de 20 a 200 cp baseado na avaliação. Uma classe profissional **TimeManagement** estilo Stockfish gerencia a alocação de tempo com ajustes de estabilidade/queda de score, detecção de lance óbvio e consciência de fase do jogo. A **TranspositionTable** agora suporta dimensionamento dinâmico via opção UCI `Hash` (1–4096 MB) com alocação alinhada ao cache e prefetching. Nova infraestrutura de bitboard (BETWEEN_BB, LINE_BB, RAY_BB) permite geração legal de lances consciente de cravadas e evasão de xeque mais rápida.
 
-Principais destaques da v1.1:
-- Tratamento de empate: tripla repetição, regra dos 50 lances, material insuficiente e detecção de ciclos
-- Evitar empates: contempt na avaliação (+/-20 cp a partir da perspectiva do lado na raiz)
-- Ordenação de busca: MovePicker em estágios (lance da TT, boas capturas, killers, quiets, capturas ruins)
-- SEE (Static Exchange Evaluation) integrado para filtrar qualidade de capturas
-- Refatoração interna de performance: representação compacta de lance e buffers fixos de movimentos
-- Parsing mais seguro: validação mais forte em `setFEN()` e comandos UCI case-insensitive
+Principais destaques da v1.2:
+- Reestruturação arquitetural completa: 25 arquivos com separação H/CPP e namespaces
+- Busca: tabela log LMR, razoring, reverse futility pruning, IID, late move pruning, futility pruning, poda SEE
+- Contempt dinâmico: escala de 20–200 cp baseado na vantagem de avaliação
+- TimeManagement estilo Stockfish: tempo ótimo/máximo, ajuste de estabilidade, detecção de lance óbvio
+- TT configurável: dimensionamento dinâmico Hash (1–4096 MB), alinhada ao cache, prefetch, reporte hashfull
+- Infraestrutura de bitboard: BETWEEN_BB, LINE_BB, RAY_BB para detecção de cravadas e evasão de xeque
+- Tabela hash de peões: cacheia avaliação de estrutura de peões por eficiência
+- Avaliação preguiçosa: pula avaliação detalhada quando vantagem material é decisiva (fora de finais)
+- Comando perft para testes de correção
+- Cabeçalhos de licença GPL v3 em todos os arquivos-fonte
 
 ### Como Compilar
 
@@ -204,16 +212,16 @@ make PROFILE=native                 # melhor para sua CPU local
 
 **Com PGO (Profile-Guided Optimization) para força máxima:**
 ```bash
-UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make profile-build PROFILE=bmi2 LTO_JOBS=8
+make pgo PROFILE=bmi2
 ```
 
 **Ou passo a passo:**
 ```bash
 # Passo 1: Build instrumentado PGO + execução para coleta de perfis
-UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make -f Makefile pgo-gen PROFILE=bmi2 LTO_JOBS=8
+make pgo-gen PROFILE=bmi2
 
 # Passo 2: Rebuild usando os dados de perfil coletados
-make -f Makefile pgo-use PROFILE=bmi2 LTO_JOBS=8
+make pgo-use PROFILE=bmi2
 ```
 
 **Outros targets úteis:**
@@ -232,12 +240,12 @@ make info                           # mostra configuração atual de build
 Usando o **Prompt de Comando de Ferramentas Nativas x64 do VS 2022**:
 
 ```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.1-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp /Fe:deepbecky-v1.2-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
 ```
 
 **Sem AVX2 (compatibilidade mais ampla):**
 ```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.1-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp /Fe:deepbecky-v1.2-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
 ```
 
 **Requisitos:** Visual Studio 2022 com ferramentas C++
@@ -255,17 +263,17 @@ make PROFILE=native                 # otimizado nativo
 
 **Com PGO:**
 ```bash
-UCI_SCRIPT=$'uci\nisready\nucinewgame\nposition startpos\ngo depth 14\nquit' make profile-build PROFILE=native
+make pgo PROFILE=native
 ```
 
 **Compilação manual (sem Makefile):**
 ```bash
-g++ -O3 -std=c++17 -march=native -DNDEBUG -flto main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp -o deepbecky
+g++ -O3 -std=c++17 -march=native -DNDEBUG -flto main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp -o deepbecky
 ```
 
 **Linkagem estática (binário totalmente portátil):**
 ```bash
-g++ -O3 -std=c++17 -march=native -DNDEBUG -flto -static -static-libgcc -static-libstdc++ main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp -o deepbecky
+g++ -O3 -std=c++17 -march=native -DNDEBUG -flto -static -static-libgcc -static-libstdc++ main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp -o deepbecky
 ```
 
 ---
@@ -275,7 +283,7 @@ g++ -O3 -std=c++17 -march=native -DNDEBUG -flto -static -static-libgcc -static-l
 - **C++17 ou superior necessário**
 - O Makefile habilita **LTO** (Link-Time Optimization) e **linkagem estática** por padrão
 - **Builds PGO** podem fornecer ~5-10% de melhoria de velocidade (requer MSYS2 ou shell Linux/macOS)
-- Perfis disponíveis: `portable` (padrão), `avx2`, `bmi2`, `native`
+- Perfis disponíveis: `portable` (padrão), `sse42`, `avx2`, `bmi2`, `native`
 
 ### Como Usar
 
