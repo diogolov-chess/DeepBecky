@@ -39,7 +39,6 @@ Main v1.2 highlights:
 - Pawn hash table: caches pawn structure evaluation for efficiency
 - Lazy evaluation: skips detailed eval when material advantage is decisive (non-endgame)
 - Perft command for correctness testing
-- GPL v3 license headers on all source files
 
 ### How to Compile
 
@@ -186,7 +185,6 @@ Principais destaques da v1.2:
 - Tabela hash de peões: cacheia avaliação de estrutura de peões por eficiência
 - Avaliação preguiçosa: pula avaliação detalhada quando vantagem material é decisiva (fora de finais)
 - Comando perft para testes de correção
-- Cabeçalhos de licença GPL v3 em todos os arquivos-fonte
 
 ### Como Compilar
 
