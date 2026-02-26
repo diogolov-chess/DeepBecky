@@ -1,6 +1,6 @@
 /*
  * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
+ * Copyright © 2025-2026 Diogo de Oliveira Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -134,3 +134,4 @@ inline U64 queenAttacks(int sq, U64 occ) {
 }
 
 #endif // DEEPBECKY_BITBOARD_H
+
