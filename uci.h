@@ -13,29 +13,34 @@
  * GNU General Public License for more details.
  */
 
-// main.cpp
+// uci.h - UCI Protocol Header
+#ifndef UCI_H
+#define UCI_H
 
-#include "magic.h"
-#include "bitboard.h"
 #include "position.h"
-#include "search.h"
-#include "tt.h"
-#include "uci.h"
+#include <string>
+#include <sstream>
 
-#include <iostream>
+namespace UCI {
 
-int main() {
-    // Disable buffering for better UCI GUI compatibility
-    std::ios_base::sync_with_stdio(false);
-    
-    // Initialize tables
-    Magic::init();
-    initBitboards();
-    Search::init();
-    
-    // Create engine and start UCI loop
-    Position engine;
-    UCI::loop(engine);
-    
-    return 0;
-}
+// Loop principal do UCI
+void loop(Position& engine);
+
+// Comandos UCI
+void cmdUci();
+void cmdIsReady();
+void cmdSetOption(Position& engine, std::istringstream& is);
+void cmdNewGame(Position& engine);
+void cmdPosition(Position& engine, std::istringstream& is);
+void cmdGo(Position& engine, std::istringstream& is);
+void cmdPerft(Position& engine, std::istringstream& is);
+
+// Utilities
+std::string toLower(const std::string& str);
+
+} // namespace UCI
+
+// Alias for compatibility
+using DeepBeckyEngine = Position;
+
+#endif // UCI_H

@@ -13,29 +13,28 @@
  * GNU General Public License for more details.
  */
 
-// main.cpp
+// movegen.h - Move generation
+#ifndef DEEPBECKY_MOVEGEN_H
+#define DEEPBECKY_MOVEGEN_H
 
-#include "magic.h"
+#include "types.h"
 #include "bitboard.h"
-#include "position.h"
-#include "search.h"
-#include "tt.h"
-#include "uci.h"
 
-#include <iostream>
+// Forward declaration
+class Position;
 
-int main() {
-    // Disable buffering for better UCI GUI compatibility
-    std::ios_base::sync_with_stdio(false);
-    
-    // Initialize tables
-    Magic::init();
-    initBitboards();
-    Search::init();
-    
-    // Create engine and start UCI loop
-    Position engine;
-    UCI::loop(engine);
-    
-    return 0;
-}
+// Move generation is implemented as methods of Position
+// This header exists for organization and future extensions
+
+// Generation types
+enum GenType {
+    GEN_ALL,       // All moves
+    GEN_CAPTURES,  // Captures only
+    GEN_QUIETS,    // Non-captures only
+    GEN_EVASIONS   // Check evasions
+};
+
+// Perft for debugging
+uint64_t perft(Position& pos, int depth);
+
+#endif // DEEPBECKY_MOVEGEN_H

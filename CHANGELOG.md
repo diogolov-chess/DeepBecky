@@ -2,6 +2,398 @@
 
 ---
 
+# Deep Becky 1.2
+
+---
+
+# 🇬🇧 English Version
+
+## Improvements over version 1.1
+
+### 🏗️ Full Architectural Restructure
+
+Version 1.1 used 8 source files centered around a monolithic `engine.h` / `engine.cpp`. Version 1.2 splits the codebase into **25 files** with proper header/implementation separation, namespaces, and single-responsibility modules:
+
+| File | Description |
+|------|-------------|
+| `types.h` | Core types, enums (Square, Color, Piece), constants, helper functions |
+| `bitboard.h` / `bitboard.cpp` | Bitboard constants, attack tables, BETWEEN_BB, LINE_BB, RAY_BB |
+| `position.h` / `position.cpp` | Position class, make/undo move, FEN, repetition, SEE |
+| `search.h` / `search.cpp` | PVS, quiescence, iterative deepening, pruning techniques |
+| `evaluate.h` / `evaluate.cpp` | Full evaluation function with pawn hash |
+| `movegen.h` / `movegen.cpp` | Move generation, legality, attack detection, perft |
+| `movepick.h` / `movepick.cpp` | Staged move ordering (MovePicker) |
+| `tt.h` / `tt.cpp` | TranspositionTable class with dynamic sizing |
+| `timeman.h` / `timeman.cpp` | TimeManagement class (Stockfish-style) |
+| `uci.h` / `uci.cpp` | UCI protocol handling |
+| `magic.h` / `magic.cpp` | Magic Bitboard tables and initialization |
+| `main.cpp` | Entry point |
+
+GPL v3 license headers added to all source files.
+
+---
+
+### 🔍 Search Improvements
+
+#### LMR Reduction Table (NEW)
+Pre-computed logarithmic reduction table `Reductions[64][64]` using the formula `log(d) × log(m) / 2`, with adjustments for PV nodes, improving moves, killers, and check moves.
+
+#### Razoring (NEW)
+At depth ≤ 1, if the static evaluation is far below alpha, the engine drops into quiescence search directly:
+```cpp
+if (depth <= 1 && staticEval + 300 <= alpha) return qsearch(alpha, beta, ply);
+```
+
+#### Reverse Futility Pruning / Static Null Move Pruning (NEW)
+At shallow depths (< 5), if the static evaluation exceeds beta by a depth-dependent margin, the position is pruned early:
+```cpp
+if (depth < 5 && staticEval - 80 * depth >= beta) return staticEval;
+```
+
+#### Internal Iterative Deepening (NEW)
+When at depth ≥ 6 with no TT move available, a shallow search (depth - 2) is performed first to find a likely best move for better ordering.
+
+#### Capture Extension for Sacrifices (NEW)
+Captures that lose material (SEE < 0) but are the only reasonable option are extended by 1 ply to ensure proper tactical resolution.
+
+#### Late Move Pruning / Move Count Pruning (NEW)
+Quiet moves beyond a depth-dependent count threshold are pruned entirely at shallow depths.
+
+#### Futility Pruning at Child Node (NEW)
+Quiet moves at shallow depths where the static evaluation plus a margin cannot reach alpha are skipped.
+
+#### SEE Pruning for Captures (NEW)
+Captures with negative SEE (losing exchanges) are pruned at shallow depths in the main search.
+
+#### Dynamic Contempt (NEW)
+Contempt now scales dynamically based on the root evaluation (20–200 cp), applying stronger draw avoidance when the engine is winning.
+
+#### Minimum Depth Guarantee (NEW)
+The engine now always completes at least 4 iterations of iterative deepening before time management can stop the search, preventing shallow blunders.
+
+#### Mate Finding Optimization (NEW)
+When a forced mate is found, the engine stops searching only after the best move is stable for at least 2 iterations and the search depth is sufficient to confirm the mate distance.
+
+---
+
+### ⏱️ TimeManagement Class (NEW)
+
+Complete Stockfish-style time management system in a dedicated module (`timeman.h` / `timeman.cpp`):
+
+- **Optimum/maximum time** calculation with distinct allocation strategies
+- **Move importance** function — allocates more time to critical moments
+- **Stability adjustment** — extends time when the best move keeps changing between iterations
+- **Score drop adjustment** — extends time when the evaluation drops significantly
+- **Legal moves factor** — reduces time for positions with few legal moves
+- **Obvious move detection** — plays instantly when only one or two legal moves exist, or when a simple recapture is available
+- **Game phase awareness** — different time allocation for opening, middlegame, and endgame
+- **Safety caps** — hard limits to prevent time losses
+
+---
+
+### 🗃️ TranspositionTable Class (NEW)
+
+Dedicated transposition table module (`tt.h` / `tt.cpp`) with professional features:
+
+- **Dynamic sizing** via UCI option `setoption name Hash value N` (1–4096 MB)
+- **Cache-aligned allocation** for optimal CPU cache performance
+- **`#pragma pack`** 16-byte entries for memory efficiency
+- **`prefetch()`** for memory prefetching before probing
+- **`hashfull()`** reporting in UCI info strings
+- **Depth-preferred replacement** with aging between searches
+
+---
+
+### 🏗️ Bitboard Infrastructure Upgrade
+
+New dedicated bitboard module (`bitboard.h` / `bitboard.cpp`) with:
+
+- Named file/rank constants (`FileABB`..`FileHBB`, `Rank1BB`..`Rank8BB`)
+- `BETWEEN_BB[64][64]` — squares strictly between two aligned squares (used for pin detection and check evasion)
+- `LINE_BB[64][64]` — complete line through two aligned squares (used for pin-aware move legality)
+- `RAY_BB[64][8]` — ray tables in all 8 directions
+- Inline attack helper functions: `pawnAttacks()`, `knightAttacks()`, `kingAttacks()`, `queenAttacks()`
+
+---
+
+### ♟️ Position Class Enrichments
+
+The engine class was renamed from `DeepBeckyEngine` to `Position` with many new capabilities:
+
+- **Pawn hash key** (`pawnKey`) with dedicated pawn evaluation cache (`PawnEntry`, 65536 entries) — avoids recomputing pawn structure when only pieces move
+- **Material hash key** (`materialKey`) with material evaluation cache (`MaterialEntry`)
+- **`attackersTo(sq, occ)`** — returns all pieces attacking a square for any occupancy
+- **`checkersBB()`** — bitboard of pieces giving check to one side
+- **`pinnedBB()`** — bitboard of pinned pieces
+- **`blockersForKing()`** — pieces that block sliding attacks on the king (pinners output)
+- **`SEE()` with threshold** — full static exchange evaluation with X-ray support and early exit optimization
+- **`hasNonPawnMaterial()`** — used for null move pruning safety (prevents null move in king+pawn endgames)
+- **`selDepth`** tracking — reports maximum selective depth reached
+- Improved repetition detection with `RepState` struct tracking repetition distance
+
+---
+
+### ♟️ Move Generation Improvements
+
+- **Optimized legal move generation** using `checkersBB`, `pinnedBB`, `blockersForKing`, `BETWEEN_BB`, and `LINE_BB` for fast check evasion and pin-aware filtering
+- **Special en passant legality check** for horizontal pin edge cases
+- **Double-check handling** — when in double check, only king moves are generated
+- **`perft()` function** for correctness testing and debugging
+
+---
+
+### 📊 Evaluation Improvements
+
+- **Lazy evaluation** — when material advantage exceeds ±2000 cp (20 pawns) in non-endgame positions, detailed evaluation is skipped for speed
+- **Pawn hash table** — pawn structure evaluation (doubled, isolated, passed pawns) is cached and reused when only pieces move
+- **Never lazy eval in endgames** — ensures precise evaluation when material is low
+
+---
+
+### 🔧 UCI Improvements
+
+- **`setoption name Hash value N`** — dynamically resize the transposition table (1–4096 MB)
+- **`perft` command** with divide output for debugging and correctness verification
+- **`hashfull`** reported in UCI info output
+
+---
+
+### 🛠 Build System
+
+- Updated default binary name to `deepbecky-v1.2-windows-x64.exe`
+- **SSE4.2 profile** added (`PROFILE=sse42`)
+- **Cross-platform Makefile** works in both MSYS2 and Windows CMD/PowerShell
+- **PGO training** uses 6 diverse positions (startpos, Italian, QGD, Kiwipete, endgame, promotions) for better profile coverage
+- **Configurable PGO depth** (`PGO_DEPTH` variable)
+- **`help` and `info` targets** for build system documentation
+- **Debug build target** (`make debug`) with `-g -O0` flags
+
+---
+
+## Strength Comparison
+
+| Feature | v1.1 | v1.2 |
+|---------|------|------|
+| Architecture | 8 files, single header | 25 files, full H/CPP separation |
+| TT Dynamic Sizing | ❌ | ✅ (UCI `Hash` option) |
+| LMR Log Table | ❌ | ✅ (`Reductions[64][64]`) |
+| Razoring | ❌ | ✅ |
+| Reverse Futility Pruning | ❌ | ✅ |
+| Internal Iterative Deepening | ❌ | ✅ |
+| Late Move Pruning | ❌ | ✅ |
+| Futility Pruning (child) | ❌ | ✅ |
+| SEE Pruning (captures) | ❌ | ✅ |
+| Dynamic Contempt | Fixed ±20 cp | Scaled 20–200 cp |
+| TimeManagement Class | Basic | Stockfish-style |
+| Pawn Hash Table | ❌ | ✅ |
+| Lazy Evaluation | ❌ | ✅ |
+| BETWEEN_BB / LINE_BB Tables | ❌ | ✅ |
+| Pin-Aware Legal Gen | ❌ | ✅ |
+| Perft Command | ❌ | ✅ |
+| `hashfull` Reporting | ❌ | ✅ |
+| Cache-Aligned TT | ❌ | ✅ |
+| TT Prefetch | ❌ | ✅ |
+| Minimum Depth Guarantee | ❌ | ✅ (4 plies) |
+| GPL v3 License Headers | ❌ | ✅ |
+
+---
+
+---
+
+# 🇧🇷 Versão em Português
+
+## Melhorias em relação à versão 1.1
+
+### 🏗️ Reestruturação Arquitetural Completa
+
+A versão 1.1 usava 8 arquivos-fonte centralizados em `engine.h` / `engine.cpp`. A versão 1.2 divide o código em **25 arquivos** com separação adequada header/implementação, namespaces e módulos com responsabilidade única:
+
+| Arquivo | Descrição |
+|---------|-----------|
+| `types.h` | Tipos base, enums (Square, Color, Piece), constantes, funções auxiliares |
+| `bitboard.h` / `bitboard.cpp` | Constantes de bitboard, tabelas de ataques, BETWEEN_BB, LINE_BB, RAY_BB |
+| `position.h` / `position.cpp` | Classe Position, make/undo move, FEN, repetição, SEE |
+| `search.h` / `search.cpp` | PVS, quiescência, aprofundamento iterativo, técnicas de poda |
+| `evaluate.h` / `evaluate.cpp` | Função de avaliação completa com hash de peões |
+| `movegen.h` / `movegen.cpp` | Geração de movimentos, legalidade, detecção de ataques, perft |
+| `movepick.h` / `movepick.cpp` | Ordenação de lances em estágios (MovePicker) |
+| `tt.h` / `tt.cpp` | Classe TranspositionTable com dimensionamento dinâmico |
+| `timeman.h` / `timeman.cpp` | Classe TimeManagement (estilo Stockfish) |
+| `uci.h` / `uci.cpp` | Tratamento do protocolo UCI |
+| `magic.h` / `magic.cpp` | Tabelas e inicialização de Magic Bitboards |
+| `main.cpp` | Ponto de entrada |
+
+Cabeçalhos de licença GPL v3 adicionados a todos os arquivos-fonte.
+
+---
+
+### 🔍 Melhorias na Busca
+
+#### Tabela de Redução LMR (NOVO)
+Tabela de redução logarítmica pré-computada `Reductions[64][64]` usando a fórmula `log(d) × log(m) / 2`, com ajustes para nós PV, lances que melhoram, killers e lances de xeque.
+
+#### Razoring (NOVO)
+Na profundidade ≤ 1, se a avaliação estática estiver muito abaixo de alpha, a engine cai diretamente na quiescence search:
+```cpp
+if (depth <= 1 && staticEval + 300 <= alpha) return qsearch(alpha, beta, ply);
+```
+
+#### Reverse Futility Pruning / Static Null Move Pruning (NOVO)
+Em profundidades rasas (< 5), se a avaliação estática exceder beta por uma margem dependente da profundidade, a posição é podada antecipadamente:
+```cpp
+if (depth < 5 && staticEval - 80 * depth >= beta) return staticEval;
+```
+
+#### Internal Iterative Deepening (NOVO)
+Quando na profundidade ≥ 6 sem lance da TT disponível, uma busca rasa (depth - 2) é realizada primeiro para encontrar o provável melhor lance para melhor ordenação.
+
+#### Extensão de Captura para Sacrifícios (NOVO)
+Capturas que perdem material (SEE < 0) mas são a única opção razoável são estendidas em 1 ply para garantir resolução tática adequada.
+
+#### Late Move Pruning / Poda por Contagem de Lances (NOVO)
+Lances quietos além de um limite de contagem dependente da profundidade são podados inteiramente em profundidades rasas.
+
+#### Futility Pruning no Nó-Filho (NOVO)
+Lances quietos em profundidades rasas onde a avaliação estática mais uma margem não pode alcançar alpha são ignorados.
+
+#### Poda SEE para Capturas (NOVO)
+Capturas com SEE negativo (trocas perdedoras) são podadas em profundidades rasas na busca principal.
+
+#### Contempt Dinâmico (NOVO)
+O contempt agora escala dinamicamente com base na avaliação da raiz (20–200 cp), aplicando evitação de empate mais forte quando a engine está ganhando.
+
+#### Garantia de Profundidade Mínima (NOVO)
+A engine agora sempre completa pelo menos 4 iterações de iterative deepening antes que o gerenciamento de tempo possa parar a busca, prevenindo blunders em profundidades rasas.
+
+#### Otimização de Busca de Mate (NOVO)
+Quando um mate forçado é encontrado, a engine só para de buscar depois que o melhor lance for estável por pelo menos 2 iterações e a profundidade de busca for suficiente para confirmar a distância do mate.
+
+---
+
+### ⏱️ Classe TimeManagement (NOVO)
+
+Sistema completo de gerenciamento de tempo estilo Stockfish em módulo dedicado (`timeman.h` / `timeman.cpp`):
+
+- **Tempo ótimo/máximo** com estratégias de alocação distintas
+- **Importância do lance** — aloca mais tempo para momentos críticos
+- **Ajuste de estabilidade** — estende o tempo quando o melhor lance muda entre iterações
+- **Ajuste por queda de score** — estende o tempo quando a avaliação cai significativamente
+- **Fator de lances legais** — reduz o tempo para posições com poucos lances legais
+- **Detecção de lance óbvio** — joga instantaneamente quando há apenas um ou dois lances legais, ou quando uma recaptura simples está disponível
+- **Consciência de fase do jogo** — alocação de tempo diferente para abertura, meio-jogo e final
+- **Limites de segurança** — tetos rígidos para prevenir perda por tempo
+
+---
+
+### 🗃️ Classe TranspositionTable (NOVO)
+
+Módulo dedicado de tabela de transposição (`tt.h` / `tt.cpp`) com recursos profissionais:
+
+- **Dimensionamento dinâmico** via opção UCI `setoption name Hash value N` (1–4096 MB)
+- **Alocação alinhada ao cache** para desempenho ideal de cache da CPU
+- **`#pragma pack`** com entradas de 16 bytes para eficiência de memória
+- **`prefetch()`** para pré-busca de memória antes do probing
+- **`hashfull()`** reportado nas strings de info UCI
+- **Substituição por profundidade preferencial** com envelhecimento entre buscas
+
+---
+
+### 🏗️ Infraestrutura de Bitboard Aprimorada
+
+Novo módulo dedicado de bitboard (`bitboard.h` / `bitboard.cpp`) com:
+
+- Constantes nomeadas de coluna/fileira (`FileABB`..`FileHBB`, `Rank1BB`..`Rank8BB`)
+- `BETWEEN_BB[64][64]` — casas estritamente entre duas casas alinhadas (usado para detecção de cravadas e evasão de xeque)
+- `LINE_BB[64][64]` — linha completa passando por duas casas alinhadas (usado para legalidade de lances considerando cravadas)
+- `RAY_BB[64][8]` — tabelas de raios em todas as 8 direções
+- Funções inline de ataque: `pawnAttacks()`, `knightAttacks()`, `kingAttacks()`, `queenAttacks()`
+
+---
+
+### ♟️ Enriquecimento da Classe Position
+
+A classe da engine foi renomeada de `DeepBeckyEngine` para `Position` com muitas novas capacidades:
+
+- **Chave hash de peões** (`pawnKey`) com cache dedicado de avaliação de peões (`PawnEntry`, 65536 entradas) — evita recomputar estrutura de peões quando apenas peças se movem
+- **Chave hash de material** (`materialKey`) com cache de avaliação de material (`MaterialEntry`)
+- **`attackersTo(sq, occ)`** — retorna todas as peças atacando uma casa para qualquer ocupação
+- **`checkersBB()`** — bitboard de peças dando xeque a um lado
+- **`pinnedBB()`** — bitboard de peças cravadas
+- **`blockersForKing()`** — peças que bloqueiam ataques deslizantes no rei (saída de cravadores)
+- **`SEE()` com threshold** — avaliação estática de troca completa com suporte a raios-X e otimização de saída antecipada
+- **`hasNonPawnMaterial()`** — usado para segurança na poda de lance nulo (previne lance nulo em finais de rei+peões)
+- **Rastreamento de `selDepth`** — reporta profundidade seletiva máxima alcançada
+- Detecção de repetição melhorada com struct `RepState` rastreando distância de repetição
+
+---
+
+### ♟️ Melhorias na Geração de Movimentos
+
+- **Geração legal otimizada** usando `checkersBB`, `pinnedBB`, `blockersForKing`, `BETWEEN_BB` e `LINE_BB` para evasão de xeque rápida e filtragem consciente de cravadas
+- **Verificação especial de legalidade de en passant** para casos extremos de cravada horizontal
+- **Tratamento de xeque duplo** — quando em xeque duplo, apenas lances de rei são gerados
+- **Função `perft()`** para testes de correção e debugging
+
+---
+
+### 📊 Melhorias na Avaliação
+
+- **Avaliação preguiçosa (lazy eval)** — quando a vantagem material excede ±2000 cp (20 peões) em posições fora do final, a avaliação detalhada é pulada por velocidade
+- **Tabela hash de peões** — avaliação de estrutura de peões (dobrados, isolados, passados) é cacheada e reutilizada quando apenas peças se movem
+- **Nunca lazy eval em finais** — garante avaliação precisa quando o material é baixo
+
+---
+
+### 🔧 Melhorias UCI
+
+- **`setoption name Hash value N`** — redimensiona dinamicamente a tabela de transposição (1–4096 MB)
+- **Comando `perft`** com saída divide para debugging e verificação de correção
+- **`hashfull`** reportado na saída de info UCI
+
+---
+
+### 🛠 Sistema de Build
+
+- Nome padrão do binário atualizado para `deepbecky-v1.2-windows-x64.exe`
+- **Perfil SSE4.2** adicionado (`PROFILE=sse42`)
+- **Makefile multiplataforma** funciona em MSYS2 e Windows CMD/PowerShell
+- **Treinamento PGO** usa 6 posições diversas (posição inicial, Italiana, QGD, Kiwipete, final, promoções) para melhor cobertura de perfil
+- **Profundidade PGO configurável** (variável `PGO_DEPTH`)
+- **Targets `help` e `info`** para documentação do sistema de build
+- **Target de build debug** (`make debug`) com flags `-g -O0`
+
+---
+
+## Comparativo de Força
+
+| Característica | v1.1 | v1.2 |
+|----------------|------|------|
+| Arquitetura | 8 arquivos, header único | 25 arquivos, separação H/CPP completa |
+| TT com Tamanho Dinâmico | ❌ | ✅ (opção UCI `Hash`) |
+| Tabela Log LMR | ❌ | ✅ (`Reductions[64][64]`) |
+| Razoring | ❌ | ✅ |
+| Reverse Futility Pruning | ❌ | ✅ |
+| Internal Iterative Deepening | ❌ | ✅ |
+| Late Move Pruning | ❌ | ✅ |
+| Futility Pruning (filho) | ❌ | ✅ |
+| Poda SEE (capturas) | ❌ | ✅ |
+| Contempt Dinâmico | Fixo ±20 cp | Escalado 20–200 cp |
+| Classe TimeManagement | Básico | Estilo Stockfish |
+| Tabela Hash de Peões | ❌ | ✅ |
+| Avaliação Preguiçosa | ❌ | ✅ |
+| Tabelas BETWEEN_BB / LINE_BB | ❌ | ✅ |
+| Geração Legal com Cravadas | ❌ | ✅ |
+| Comando Perft | ❌ | ✅ |
+| Reporte `hashfull` | ❌ | ✅ |
+| TT Alinhada ao Cache | ❌ | ✅ |
+| Prefetch da TT | ❌ | ✅ |
+| Garantia de Profundidade Mínima | ❌ | ✅ (4 plies) |
+| Cabeçalhos Licença GPL v3 | ❌ | ✅ |
+
+---
+
+---
+
 # Deep Becky 1.1
 
 ---
@@ -101,770 +493,6 @@
 
 - Nome padrão do binário no Makefile atualizado para:
     - `deepbecky-v1.1-windows-x64.exe`
-
----
-
-# Deep Becky 1.0
-
----
-
-# 🇬🇧 English Version
-
-## New Features and Improvements over version 0.2
-
-### 🏗️ Multi-File Architecture
-
-Version 0.2 was a single monolithic file (`deepbecky02.cpp`). Version 1.0 splits the engine into a modular multi-file architecture:
-
-| File | Description |
-|------|-------------|
-| `engine.h` | Header with all types, constants and class declaration |
-| `engine.cpp` | Board representation, make/undo move, UCI loop |
-| `eval.cpp` | Full evaluation function |
-| `movegen.cpp` | Move generation and attack detection |
-| `search.cpp` | Search (PVS, quiescence, iterative deepening) |
-| `magic.cpp` / `magic.h` | Magic Bitboard tables and initialization |
-| `main.cpp` | Entry point |
-
----
-
-### ♟️ Full Bitboard Board Representation
-
-The most significant change: version 0.2 used a simple `int b[8][8]` array. Version 1.0 uses a **full bitboard representation**:
-
-```cpp
-U64 bitboards[13];        // One bitboard per piece type
-U64 color_bitboards[2];   // One bitboard per color (WHITE, BLACK)
-int piece_board[64];      // Mailbox for O(1) piece lookup
-int king_sq[2];           // King positions tracked at all times
-```
-
-This enables vastly faster move generation, attack detection, and evaluation using bitwise operations.
-
----
-
-### 🪄 Magic Bitboards for Sliding Pieces
-
-Complete **Magic Bitboard** system for bishops, rooks, and queens:
-- Pre-computed magic numbers for all 64 squares
-- Lookup tables for instant sliding piece attack generation
-- `Magic::rookAttacks(sq, occ)` and `Magic::bishopAttacks(sq, occ)` for O(1) attack computation
-
-Additionally, **pre-computed attack tables** for non-sliding pieces:
-- `KNIGHT_ATK_BB[64]`, `KING_ATK_BB[64]`
-- `WPAWN_ATK_BB[64]`, `BPAWN_ATK_BB[64]`
-
----
-
-### ⚡ Bitboard-Based Move Generation
-
-Pawn moves now use **bulk bitwise shift operations** instead of per-piece loops:
-```cpp
-U64 oneStep = (pawns << 8) & empty_squares;   // All white pawn pushes at once
-U64 capL = ((pawns & ~FILE_A) << 7) & opp;    // All left captures at once
-```
-
-Sliding piece moves use Magic Bitboard lookups. Castling uses direct occupancy bitmask checks (`0x60ULL`, `0xEULL`, etc.) instead of individual square checks.
-
----
-
-### 🔍 Enhanced Search
-
-#### Null Move Pruning (NEW)
-Version 1.0 adds **Null Move Pruning** — when not in check and at sufficient depth, the engine tries passing the turn to see if the position is still good enough to cause a beta cutoff:
-```cpp
-if(!isInCheck && depth >= 3 && ply > 0){
-    makeNullMove();
-    int R = 2 + (depth / 6);
-    int nmScore = -pvs(depth - 1 - R, ply+1, -beta, -beta+1);
-    undoNullMove();
-    if(nmScore >= beta) return beta;
-}
-```
-
-#### Improved Late Move Reductions (LMR)
-LMR now triggers at `moveCount > 3` and `depth >= 3`, and also skips promotions (not only captures and castles as in v0.2).
-
-#### Delta Pruning in Quiescence Search (NEW)
-Captures that cannot possibly raise alpha are pruned:
-```cpp
-if(stand + capGain + promoGain + 100 < alpha) continue;
-```
-
-#### In-Search Legality Check
-Instead of generating all legal moves upfront (expensive), v1.0 generates pseudo-legal moves and checks legality inline during search (make → check king → undo), saving time on positions with many illegal pseudo-legal moves.
-
-#### Improved Time Management
-- Time is checked only every 16,384 nodes (`nodes & 0x3FFF`) instead of every node
-- Search stops early if more than half the allocated time has been spent
-- 50-move rule draw detection (`halfmove >= 100`)
-
-#### Full PV Line Display
-New `getPV()` and `pvToString()` functions extract the Principal Variation from the TT, showing the full expected line in UCI output.
-
-#### Improved Aspiration Windows
-Starts at depth >= 4 with a tighter window of 25 cp (vs depth >= 3 with 35 + d×3); simpler and more robust re-search when failing.
-
----
-
-### 📊 Vastly Improved Evaluation
-
-#### Proper Tapered Evaluation (MG/EG)
-Full middlegame/endgame score blending using a **phase counter** based on remaining material:
-```
-Knights/Bishops = 1, Rooks = 2, Queens = 4 (max phase = 24)
-score = (scoreMG × phase + scoreEG × (24 − phase)) / 24
-```
-
-#### Complete Piece Mobility
-Mobility is now computed for **all piece types** (knights, bishops, rooks, queens) with separate MG/EG weights, using bitboard attack tables. Version 0.2 only counted rook/queen mobility on rank/file lines.
-
-#### Pawn Structure (NEW)
-- **Doubled pawns** — penalty per extra pawn on the same file
-- **Isolated pawns** — penalty for pawns with no friendly pawns on adjacent files
-- **Passed pawns** — rank-based bonus tables (increasing bonus as pawn advances)
-
-#### Rook on Open/Semi-Open Files (NEW)
-Bonuses for rooks placed on files with no own pawns (semi-open) or no pawns at all (open).
-
-#### Knight Outposts (NEW)
-Bonus for knights on advanced squares that cannot be attacked by enemy pawns, with extra bonus if supported by own pawn.
-
-#### King Safety (NEW)
-- **Pawn shield** score around the king
-- **King ring pressure** — penalty based on enemy piece attacks on squares surrounding the king
-- **King activity in endgame** — mobility bonus for active king
-
-#### Tempo Bonus (NEW)
-Small positional bonus for the side to move (+10 MG, +5 EG).
-
-#### 50-Move Rule Damping (NEW)
-Score is gradually reduced as the halfmove counter increases, reflecting the approaching draw:
-```cpp
-score -= score * halfmove / 212;
-```
-
----
-
-### ⚙️ Incremental Zobrist Hashing
-
-Version 0.2 recomputed the hash from scratch after every move (`computeHash()`). Version 1.0 updates the hash **incrementally** in `makeMove()` / `undoMove()`, only XOR-ing the changed bits. Much faster.
-
----
-
-### 🔧 Professional Build System (Makefile)
-
-New Makefile with advanced compilation features:
-- **LTO** (Link-Time Optimization) enabled by default
-- **PGO** (Profile-Guided Optimization) support (`make pgo-gen`, `make pgo-use`, `make profile-build`)
-- **Multiple architecture profiles**: `portable` (default), `avx2`, `bmi2`, `native`
-- **Static linking** by default for portable executables
-- Compatible with **MSYS2 MinGW-w64** and standard Linux/macOS GCC/Clang
-
----
-
-### 📈 Performance
-
-The combined effect of bitboards, magic bitboards, incremental hashing, null move pruning, and delta pruning results in **dramatically higher NPS** (nodes per second) compared to version 0.2, allowing the engine to search deeper in the same amount of time.
-
----
-
-### 🐛 Bug Fixes and Improvements
-
-- **Node counter overflow**: Changed from `int` to `long long`
-- **Lighter Undo struct**: Removed redundant fields (captured, full_before, side_before) — uses `piece_moved` and `captured_piece` from Move struct
-- **Improved `uciToMove()`**: Searches pseudo-legal and legal move lists for proper move matching with all flags correctly set
-- **Opening book removed**: The minimal hardcoded opening book from v0.2 was removed in favor of relying on search strength
-
----
-
-## Strength Comparison
-
-| Feature | v0.2 | v1.0 |
-|---------|------|------|
-| Board Representation | Array 8×8 | Full Bitboard |
-| Magic Bitboards | ❌ | ✅ |
-| Bitboard Move Generation | ❌ | ✅ |
-| Incremental Hashing | ❌ | ✅ |
-| Null Move Pruning | ❌ | ✅ |
-| Delta Pruning (QSearch) | ❌ | ✅ |
-| Full PV Line | ❌ | ✅ |
-| Pawn Structure (doubled/isolated/passed) | ❌ | ✅ |
-| Rook on Open Files | ❌ | ✅ |
-| Knight Outposts | ❌ | ✅ |
-| King Safety (shield + pressure) | ❌ | ✅ |
-| Tapered Eval (proper MG/EG blend) | Partial | ✅ |
-| Full Mobility (all pieces) | Partial | ✅ |
-| Tempo Bonus | ❌ | ✅ |
-| 50-Move Damping | ❌ | ✅ |
-| LTO + PGO Build | ❌ | ✅ |
-| Multi-File Architecture | ❌ | ✅ |
-
----
-
-## Compilation
-
-### MSYS2 MinGW-w64
-```bash
-make                                # portable build (default)
-make PROFILE=avx2                   # AVX2 build
-make PROFILE=native                 # native (best for local CPU)
-make profile-build PROFILE=avx2     # PGO-optimized AVX2 build
-```
-
-### MSVC (Developer Command Prompt)
-```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
-```
-
----
-
----
-
-# 🇧🇷 Versão em Português
-
-## Novidades e Melhorias em relação à versão 0.2
-
-### 🏗️ Arquitetura Multi-Arquivo
-
-A versão 0.2 era um único arquivo monolítico (`deepbecky02.cpp`). A versão 1.0 divide a engine em uma arquitetura modular multi-arquivo:
-
-| Arquivo | Descrição |
-|---------|-----------|
-| `engine.h` | Header com todos os tipos, constantes e declaração da classe |
-| `engine.cpp` | Representação do tabuleiro, make/undo move, loop UCI |
-| `eval.cpp` | Função de avaliação completa |
-| `movegen.cpp` | Geração de movimentos e detecção de ataques |
-| `search.cpp` | Busca (PVS, quiescência, aprofundamento iterativo) |
-| `magic.cpp` / `magic.h` | Tabelas e inicialização de Magic Bitboards |
-| `main.cpp` | Ponto de entrada |
-
----
-
-### ♟️ Representação Completa com Bitboards
-
-A mudança mais significativa: a versão 0.2 usava um simples array `int b[8][8]`. A versão 1.0 usa uma **representação completa com bitboards**:
-
-```cpp
-U64 bitboards[13];        // Um bitboard por tipo de peça
-U64 color_bitboards[2];   // Um bitboard por cor (WHITE, BLACK)
-int piece_board[64];      // Mailbox para lookup O(1) de peça
-int king_sq[2];           // Posições dos reis rastreadas a todo momento
-```
-
-Isso permite geração de movimentos, detecção de ataques e avaliação muito mais rápidas usando operações bitwise.
-
----
-
-### 🪄 Magic Bitboards para Peças Deslizantes
-
-Sistema completo de **Magic Bitboards** para bispos, torres e damas:
-- Números mágicos pré-computados para todas as 64 casas
-- Tabelas de lookup para geração instantânea de ataques de peças deslizantes
-- `Magic::rookAttacks(sq, occ)` e `Magic::bishopAttacks(sq, occ)` para cálculo de ataques em O(1)
-
-Além disso, **tabelas de ataques pré-computadas** para peças não-deslizantes:
-- `KNIGHT_ATK_BB[64]`, `KING_ATK_BB[64]`
-- `WPAWN_ATK_BB[64]`, `BPAWN_ATK_BB[64]`
-
----
-
-### ⚡ Geração de Movimentos Baseada em Bitboards
-
-Movimentos de peões agora usam **operações de shift em massa** em vez de loops por peça:
-```cpp
-U64 oneStep = (pawns << 8) & empty_squares;   // Todos os avanços de peões brancos de uma vez
-U64 capL = ((pawns & ~FILE_A) << 7) & opp;    // Todas as capturas à esquerda de uma vez
-```
-
-Movimentos de peças deslizantes usam lookups de Magic Bitboards. O roque usa verificação direta de bitmasks de ocupação (`0x60ULL`, `0xEULL`, etc.) em vez de verificações casa por casa.
-
----
-
-### 🔍 Busca Aprimorada
-
-#### Null Move Pruning (NOVO)
-A versão 1.0 adiciona **Null Move Pruning** — quando não está em xeque e em profundidade suficiente, a engine tenta passar a vez para ver se a posição ainda é boa o suficiente para causar um corte beta:
-```cpp
-if(!isInCheck && depth >= 3 && ply > 0){
-    makeNullMove();
-    int R = 2 + (depth / 6);
-    int nmScore = -pvs(depth - 1 - R, ply+1, -beta, -beta+1);
-    undoNullMove();
-    if(nmScore >= beta) return beta;
-}
-```
-
-#### Late Move Reductions (LMR) Melhoradas
-LMR agora ativa em `moveCount > 3` e `depth >= 3`, e também ignora promoções (não apenas capturas e roques como na v0.2).
-
-#### Delta Pruning na Quiescence Search (NOVO)
-Capturas que não podem possivelmente melhorar alpha são podadas:
-```cpp
-if(stand + capGain + promoGain + 100 < alpha) continue;
-```
-
-#### Verificação de Legalidade In-Search
-Em vez de gerar todos os movimentos legais antecipadamente (caro), a v1.0 gera movimentos pseudo-legais e verifica a legalidade inline durante a busca (faz → verifica rei → desfaz), economizando tempo em posições com muitos movimentos pseudo-legais ilegais.
-
-#### Gerenciamento de Tempo Melhorado
-- Tempo verificado apenas a cada 16.384 nós (`nodes & 0x3FFF`) em vez de a cada nó
-- Busca para cedo se mais da metade do tempo alocado foi gasto
-- Detecção de empate pela regra dos 50 movimentos (`halfmove >= 100`)
-
-#### Linha PV Completa
-Novas funções `getPV()` e `pvToString()` extraem a Variação Principal da TT, mostrando a linha completa esperada na saída UCI.
-
-#### Aspiration Windows Melhoradas
-Inicia na profundidade >= 4 com janela mais apertada de 25 cp (vs profundidade >= 3 com 35 + d×3); re-busca mais simples e robusta em caso de falha.
-
----
-
-### 📊 Avaliação Muito Mais Completa
-
-#### Avaliação Tapered Correta (MG/EG)
-Mistura completa de pontuações middlegame/endgame usando um **contador de fase** baseado no material restante:
-```
-Cavalos/Bispos = 1, Torres = 2, Damas = 4 (fase máxima = 24)
-score = (scoreMG × fase + scoreEG × (24 − fase)) / 24
-```
-
-#### Mobilidade Completa de Peças
-A mobilidade agora é calculada para **todos os tipos de peças** (cavalos, bispos, torres, damas) com pesos separados MG/EG, usando tabelas de ataques bitboard. A versão 0.2 contava apenas a mobilidade de torres/damas nas linhas de fileira/coluna.
-
-#### Estrutura de Peões (NOVO)
-- **Peões dobrados** — penalidade por peão extra na mesma coluna
-- **Peões isolados** — penalidade para peões sem peões amigos nas colunas adjacentes
-- **Peões passados** — tabelas de bônus por fileira (bônus crescente conforme o peão avança)
-
-#### Torres em Colunas Abertas/Semi-Abertas (NOVO)
-Bônus para torres posicionadas em colunas sem peões próprios (semi-aberta) ou sem peões de nenhum lado (aberta).
-
-#### Cavalos em Postos Avançados (NOVO)
-Bônus para cavalos em casas avançadas que não podem ser atacadas por peões inimigos, com bônus extra se apoiado por peão próprio.
-
-#### Segurança do Rei (NOVO)
-- **Escudo de peões** ao redor do rei
-- **Pressão no anel do rei** — penalidade baseada nos ataques de peças inimigas nas casas ao redor do rei
-- **Atividade do rei no endgame** — bônus de mobilidade para rei ativo
-
-#### Bônus de Tempo (NOVO)
-Pequeno bônus posicional para o lado a mover (+10 MG, +5 EG).
-
-#### Amortecimento da Regra dos 50 Movimentos (NOVO)
-A pontuação é gradualmente reduzida conforme o contador de meias-jogadas aumenta, refletindo o empate se aproximando:
-```cpp
-score -= score * halfmove / 212;
-```
-
----
-
-### ⚙️ Hashing Zobrist Incremental
-
-A versão 0.2 recalculava o hash do zero após cada movimento (`computeHash()`). A versão 1.0 atualiza o hash **incrementalmente** em `makeMove()` / `undoMove()`, fazendo XOR apenas nos bits alterados. Muito mais rápido.
-
----
-
-### 🔧 Sistema de Build Profissional (Makefile)
-
-Novo Makefile com recursos avançados de compilação:
-- **LTO** (Link-Time Optimization) habilitado por padrão
-- Suporte a **PGO** (Profile-Guided Optimization) (`make pgo-gen`, `make pgo-use`, `make profile-build`)
-- **Múltiplos perfis de arquitetura**: `portable` (padrão), `avx2`, `bmi2`, `native`
-- **Linkagem estática** por padrão para executáveis portáteis
-- Compatível com **MSYS2 MinGW-w64** e GCC/Clang padrão em Linux/macOS
-
----
-
-### 📈 Desempenho
-
-O efeito combinado de bitboards, magic bitboards, hashing incremental, null move pruning e delta pruning resulta em **NPS (nós por segundo) dramaticamente mais alto** comparado à versão 0.2, permitindo que a engine busque mais fundo no mesmo período de tempo.
-
----
-
-### 🐛 Correções de Bugs e Melhorias
-
-- **Overflow do contador de nós**: Alterado de `int` para `long long`
-- **Struct Undo mais leve**: Campos redundantes removidos (captured, full_before, side_before) — usa `piece_moved` e `captured_piece` da struct Move
-- **`uciToMove()` melhorado**: Busca nas listas de movimentos pseudo-legais e legais para correspondência correta com todas as flags
-- **Opening book removido**: O livro de aberturas mínimo hardcoded da v0.2 foi removido em favor da força da busca
-
----
-
-## Comparativo de Força
-
-| Característica | v0.2 | v1.0 |
-|----------------|------|------|
-| Representação do Tabuleiro | Array 8×8 | Bitboard Completo |
-| Magic Bitboards | ❌ | ✅ |
-| Geração de Movimentos Bitboard | ❌ | ✅ |
-| Hashing Incremental | ❌ | ✅ |
-| Null Move Pruning | ❌ | ✅ |
-| Delta Pruning (QSearch) | ❌ | ✅ |
-| Linha PV Completa | ❌ | ✅ |
-| Estrutura de Peões (dobr./isol./pass.) | ❌ | ✅ |
-| Torres em Colunas Abertas | ❌ | ✅ |
-| Cavalos em Postos Avançados | ❌ | ✅ |
-| Segurança do Rei (escudo + pressão) | ❌ | ✅ |
-| Avaliação Tapered (blend MG/EG correto) | Parcial | ✅ |
-| Mobilidade Completa (todas peças) | Parcial | ✅ |
-| Bônus de Tempo | ❌ | ✅ |
-| Amortecimento 50 Movimentos | ❌ | ✅ |
-| Build LTO + PGO | ❌ | ✅ |
-| Arquitetura Multi-Arquivo | ❌ | ✅ |
-
----
-
-## Compilação
-
-### MSYS2 MinGW-w64
-```bash
-make                                # build portátil (padrão)
-make PROFILE=avx2                   # build AVX2
-make PROFILE=native                 # nativo (melhor para CPU local)
-make profile-build PROFILE=avx2     # build PGO otimizado com AVX2
-```
-
-### MSVC (Prompt de Comando do Desenvolvedor)
-```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp engine.cpp eval.cpp magic.cpp movegen.cpp search.cpp /Fe:deepbecky-v1.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
-```
-
----
-
-*Deep Becky - UCI Chess Engine by Diogo de Oliveira Almeida*
-
----
-
----
-
-# Deep Becky 0.2
-
----
-
-# 🇬🇧 English Version
-
-## New Features and Improvements over version 0.1
-
-### 🔍 Enhanced Search Algorithm
-
-#### Aspiration Windows
-Version 0.2 implements **Aspiration Windows** in Iterative Deepening. Instead of always searching with a full window (-∞, +∞), the engine starts with a narrow window based on the previous iteration's score:
-
-```cpp
-if(d >= 3){
-    int window = 35 + d*3;
-    A = prev - window;
-    B = prev + window;
-}
-```
-
-If the search fails (score outside the window), the window is progressively expanded. This results in **faster cutoffs** and significant time savings.
-
-#### Late Move Reductions (LMR)
-Implementation of **light LMR**: late moves that are neither captures nor castles are initially searched at reduced depth. If they look promising, a full re-search is performed:
-
-```cpp
-if(newDepth >= 2 && !m.is_capture && !m.is_castle){
-    sc = -pvs(newDepth-1, ply+1, -alpha-1, -alpha);
-}
-```
-
-#### Check Extension
-When the side to move is in check, the search depth is **extended by 1 ply**, ensuring more complete analysis of critical tactical lines.
-
-#### Mate Distance Pruning
-Early pruning based on mate distance, avoiding unnecessary searches when a mate has already been found at a shallower depth.
-
----
-
-### 📊 Improved Evaluation
-
-#### Mobility
-Version 0.2 adds a **mobility term** for rooks and queens, counting free squares on horizontal and vertical lines. Pieces with greater mobility receive bonuses.
-
-#### Piece-Square Tables (PST)
-Separate and optimized PST tables for each piece type, including distinct tables for the king in **middlegame** and **endgame** (PST_KING_MG and PST_KING_EG).
-
-#### Bishop Pair Bonus
-Detection and bonus (+25 centipawns) for the side that has the **bishop pair**.
-
----
-
-### 🗂️ Move Ordering
-
-#### Improved MVV-LVA Ordering
-The MVV-LVA (Most Valuable Victim - Least Valuable Attacker) formula has been refined:
-
-```cpp
-return 10 * PIECE_VALUE[def] - PIECE_VALUE[att];
-```
-
-#### Improved Killers
-Dedicated structure (`KillerTable`) with 2 slots per ply for killer moves.
-
-#### Side-Indexed History Heuristic
-The history table is now **indexed by side** (white/black), improving ordering accuracy:
-
-```cpp
-static int history_heur[2][64][64]; // side, from, to
-```
-
-#### Castling Bonus
-Castling moves receive an ordering bonus (+50,000), encouraging the engine to consider castling early.
-
----
-
-### 🎯 Move Generation
-
-#### Pseudo-Legal / Legal Separation
-New function `generatePseudo(bool capturesOnly)` allows generating only captures for Quiescence Search, saving time.
-
-#### Detailed Flags
-`Move` structure with explicit flags:
-- `is_capture`
-- `is_enpassant`  
-- `is_castle`
-- `is_doublepush`
-- `captured_piece`
-- `score`
-
----
-
-### ⚡ Performance Optimizations
-
-#### Simplified Undo Structure
-Lighter undo stack, storing only the essentials:
-```cpp
-struct Undo {
-    int captured, castling_before, ep_before, half_before, full_before;
-    bool side_before;
-    uint64_t hash_before;
-};
-```
-
-#### Castling Rights with Bitmask
-Compact representation of castling rights using **4 bits** (`0b1111` = KQkq), allowing fast operations with masks.
-
----
-
-### 📖 Opening Book
-Basic integrated opening book system, allowing instant responses in the first moves of known lines.
-
----
-
-### 🔧 UCI Protocol
-
-#### Support for New Commands
-- `go depth N` - Search to specific depth
-- `go infinite` - Search until receiving `stop`
-- `go movestogo` - Support for time control with move count
-- Time increment (`winc`/`binc`)
-
-#### Improved Output
-Correct calculation and sending of **NPS (nodes per second)** to the GUI:
-```cpp
-long long nps = (nodes * 1000) / ms;
-cout << "... nps " << nps << " ...";
-```
-
----
-
-### 🐛 Bug Fixes
-
-#### Pawn Attack Verification
-Critical fix in the `isAttacked()` function: the pawn attack direction was inverted in version 0.1, causing failures in pawn protection detection.
-
-#### Board Restoration (undoMove)
-Fix in board restoration after castling moves, preventing piece duplication or state corruption.
-
----
-
-## Strength Comparison
-
-| Feature | v0.1 | v0.2 |
-|---------|------|------|
-| Aspiration Windows | ❌ | ✅ |
-| LMR | ❌ | ✅ |
-| Check Extension | ❌ | ✅ |
-| Mate Distance Pruning | ❌ | ✅ |
-| Mobility | ❌ | ✅ |
-| King Endgame PST | Partial | ✅ |
-| Side-Indexed History | ❌ | ✅ |
-| Captures-Only Generation | ❌ | ✅ |
-| Opening Book | ❌ | ✅ |
-
----
-
-## Compilation
-
-```bash
-g++ -O3 -std=c++17 -march=native -DNDEBUG deepbecky02.cpp -o deepbecky-v0.2-windows-x64
-```
-
----
-
----
-
-# 🇧🇷 Versão em Português
-
-## Novidades e Melhorias em relação à versão 0.1
-
-### 🔍 Algoritmo de Busca Aprimorado
-
-#### Aspiration Windows
-A versão 0.2 implementa **Aspiration Windows** no Iterative Deepening. Em vez de buscar sempre com janela completa (-∞, +∞), a engine começa com uma janela estreita baseada na pontuação da iteração anterior:
-
-```cpp
-if(d >= 3){
-    int window = 35 + d*3;
-    A = prev - window;
-    B = prev + window;
-}
-```
-
-Se a busca falhar (score fora da janela), a janela é expandida progressivamente. Isso resulta em **cortes mais rápidos** e economia significativa de tempo.
-
-#### Late Move Reductions (LMR)
-Implementação de **LMR leve**: movimentos tardios que não são capturas nem roques são buscados inicialmente com profundidade reduzida. Se parecerem promissores, uma re-busca completa é feita:
-
-```cpp
-if(newDepth >= 2 && !m.is_capture && !m.is_castle){
-    sc = -pvs(newDepth-1, ply+1, -alpha-1, -alpha);
-}
-```
-
-#### Check Extension
-Quando o lado a jogar está em xeque, a profundidade de busca é **estendida em 1 ply**, garantindo análise mais completa de linhas táticas críticas.
-
-#### Mate Distance Pruning
-Poda antecipada baseada na distância do mate, evitando buscas desnecessárias quando um mate já foi encontrado em profundidade menor.
-
----
-
-### 📊 Avaliação Melhorada
-
-#### Mobilidade
-A versão 0.2 adiciona um **termo de mobilidade** para torres e damas, contando casas livres nas linhas horizontais e verticais. Peças com maior mobilidade recebem bônus.
-
-#### Piece-Square Tables (PST)
-Tabelas PST separadas e otimizadas para cada tipo de peça, incluindo tabelas distintas para o rei no **middlegame** e **endgame** (PST_KING_MG e PST_KING_EG).
-
-#### Bônus de Par de Bispos
-Detecção e bonificação (+25 centipawns) para o lado que possui o **par de bispos**.
-
----
-
-### 🗂️ Ordenação de Movimentos
-
-#### Ordenação MVV-LVA Aprimorada
-A fórmula MVV-LVA (Most Valuable Victim - Least Valuable Attacker) foi refinada:
-
-```cpp
-return 10 * PIECE_VALUE[def] - PIECE_VALUE[att];
-```
-
-#### Killers Melhorados
-Estrutura dedicada (`KillerTable`) com 2 slots por ply para movimentos killer.
-
-#### History Heuristic por Lado
-A tabela de história agora é **indexada por lado** (brancas/pretas), melhorando a precisão da ordenação:
-
-```cpp
-static int history_heur[2][64][64]; // side, from, to
-```
-
-#### Bônus para Roques
-Movimentos de roque recebem bônus de ordenação (+50.000), incentivando a engine a considerar o roque cedo.
-
----
-
-### 🎯 Geração de Movimentos
-
-#### Separação Pseudo-Legal / Legal
-Nova função `generatePseudo(bool capturesOnly)` permite gerar apenas capturas para a Quiescence Search, economizando tempo.
-
-#### Flags Detalhadas
-Estrutura `Move` com flags explícitas:
-- `is_capture`
-- `is_enpassant`  
-- `is_castle`
-- `is_doublepush`
-- `captured_piece`
-- `score`
-
----
-
-### ⚡ Otimizações de Desempenho
-
-#### Estrutura Undo Simplificada
-Pilha de undo mais leve, armazenando apenas o essencial:
-```cpp
-struct Undo {
-    int captured, castling_before, ep_before, half_before, full_before;
-    bool side_before;
-    uint64_t hash_before;
-};
-```
-
-#### Direitos de Roque com Bitmask
-Representação compacta dos direitos de roque usando **4 bits** (`0b1111` = KQkq), permitindo operações rápidas com máscaras.
-
----
-
-### 📖 Opening Book
-Sistema básico de livro de aberturas integrado, permitindo respostas instantâneas nas primeiras jogadas de linhas conhecidas.
-
----
-
-### 🔧 Protocolo UCI
-
-#### Suporte a Novos Comandos
-- `go depth N` - Busca até profundidade específica
-- `go infinite` - Busca até receber `stop`
-- `go movestogo` - Suporte a controle de tempo com número de lances
-- Incremento de tempo (`winc`/`binc`)
-
-#### Output Melhorado
-Cálculo e envio correto do **NPS (nodes per second)** para a GUI:
-```cpp
-long long nps = (nodes * 1000) / ms;
-cout << "... nps " << nps << " ...";
-```
-
----
-
-### 🐛 Correções de Bugs
-
-#### Verificação de Ataque por Peões
-Correção crítica na função `isAttacked()`: a direção de ataque dos peões estava invertida na versão 0.1, causando falhas na detecção de proteção por peões.
-
-#### Restauração do Tabuleiro (undoMove)
-Correção na restauração do tabuleiro após movimentos de roque, evitando duplicação de peças ou corrupção do estado.
-
----
-
-## Comparativo de Força
-
-| Característica | v0.1 | v0.2 |
-|---------------|------|------|
-| Aspiration Windows | ❌ | ✅ |
-| LMR | ❌ | ✅ |
-| Check Extension | ❌ | ✅ |
-| Mate Distance Pruning | ❌ | ✅ |
-| Mobilidade | ❌ | ✅ |
-| PST Endgame Rei | Parcial | ✅ |
-| History por Lado | ❌ | ✅ |
-| Geração só capturas | ❌ | ✅ |
-| Opening Book | ❌ | ✅ |
-
----
-
-## Compilação
-
-```bash
-g++ -O3 -std=c++17 -march=native -DNDEBUG deepbecky02.cpp -o deepbecky-v0.2-windows-x64
-```
 
 ---
 

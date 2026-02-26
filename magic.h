@@ -1,5 +1,5 @@
 /*
- * This file is part of Deep Becky 1.1 - A UCI Chess Engine written by AI
+ * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
  * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
@@ -13,16 +13,18 @@
  * GNU General Public License for more details.
  */
 
-#pragma once
-#include <cstdint>
+// magic.h - Magic Bitboards Header
+#ifndef MAGIC_H
+#define MAGIC_H
+
+#include "types.h"
 #include <vector>
+
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
 
 namespace Magic {
-
-using U64 = uint64_t;
 
 extern const U64 rookMagics[64];
 extern const U64 bishopMagics[64];
@@ -35,31 +37,26 @@ extern int bishopOffsets[64];
 extern std::vector<U64> rookTable;
 extern std::vector<U64> bishopTable;
 
+// Initialize magic bitboard tables
 void init();
 
-inline int popcount64(U64 v){
-#if defined(_MSC_VER)
-    return (int)__popcnt64(v);
-#else
-    return __builtin_popcountll(v);
-#endif
-}
-
-inline int lsb_index(U64 b){
-#if defined(_MSC_VER)
-    unsigned long idx; _BitScanForward64(&idx, b); return (int)idx;
-#else
-    return __builtin_ctzll(b);
-#endif
-}
-
-inline U64 rookAttacks(int sq, U64 occ){
+// Rook attacks
+inline U64 rookAttacks(int sq, U64 occ) {
     U64 key = ((occ & rookMasks[sq]) * rookMagics[sq]) >> rookShifts[sq];
-    return rookTable[rookOffsets[sq] + (int)key];
+    return rookTable[rookOffsets[sq] + static_cast<int>(key)];
 }
-inline U64 bishopAttacks(int sq, U64 occ){
+
+// Bishop attacks
+inline U64 bishopAttacks(int sq, U64 occ) {
     U64 key = ((occ & bishopMasks[sq]) * bishopMagics[sq]) >> bishopShifts[sq];
-    return bishopTable[bishopOffsets[sq] + (int)key];
+    return bishopTable[bishopOffsets[sq] + static_cast<int>(key)];
+}
+
+// Queen attacks = rook + bishop
+inline U64 queenAttacks(int sq, U64 occ) {
+    return rookAttacks(sq, occ) | bishopAttacks(sq, occ);
 }
 
 } // namespace Magic
+
+#endif // MAGIC_H
