@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo-deepbecky.png" alt="Deep Becky Logo" width="150"/>
+<img src="assets/logo-deepbecky2.png" alt="Deep Becky Logo" width="150"/>
 
 <h3>Deep Becky - UCI Chess Engine</h3>
 Version 2.0 — Lazy SMP Multi-Threading + Singular Extensions
