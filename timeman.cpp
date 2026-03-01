@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
+ * This file is part of Deep Becky 2.0 - A UCI Chess Engine written by AI
+ * Copyright © 2025-2026 Diogo de O. Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,9 +13,7 @@
  * GNU General Public License for more details.
  */
 
-// timeman.cpp - Time Management
-// Based on Stockfish's time management algorithm
-// Conservative settings to preserve time for endgame
+// Time Management
 #include "timeman.h"
 #include <cfloat>
 #include <algorithm>
@@ -24,7 +22,7 @@
 TimeManagement TimeMgr;
 
 namespace {
-    // Constants for time management
+    // Constants for time management (CONSERVATIVE tuning)
     constexpr int MoveHorizon = 50;      // Plan at most this many moves ahead
     constexpr double MaxRatio = 5.0;     // Maximum time ratio (reduced from 7.3)
     constexpr double StealRatio = 0.20;  // Don't steal more than this (reduced from 0.34)
@@ -36,6 +34,8 @@ namespace {
     constexpr TimePoint MoveOverhead = 30;
 }
 
+// Move importance function
+// Based on "how likely is the game still undecided after n half-moves"
 double TimeManagement::moveImportance(int ply) {
     constexpr double XScale = 6.85;
     constexpr double XShift = 64.5;
@@ -177,6 +177,29 @@ void TimeManagement::init(const SearchLimits& limits, bool whiteToMove, int game
     baseOptimum = optimumTime;
 }
 
+// Extend time for winning endgames (KQ vs K, KR vs K, etc.)
+// The engine needs deeper search to find mating sequences
+void TimeManagement::adjustForWinningEndgame(int eval, int phaseCount) {
+    // Only apply in endgames with large advantage
+    if (phaseCount > 8 || std::abs(eval) < 800) return;
+    
+    // Scale extension based on how winning we are
+    double extension;
+    if (std::abs(eval) >= 4000) {
+        // Crushing advantage (e.g., KQ vs K) - triple the time
+        extension = 3.0;
+    } else if (std::abs(eval) >= 2000) {
+        // Very large advantage - double the time
+        extension = 2.0;
+    } else {
+        // Large advantage - 50% more time
+        extension = 1.5;
+    }
+    
+    optimumTime = static_cast<TimePoint>(static_cast<double>(baseOptimum) * extension);
+    optimumTime = std::min(optimumTime, maximumTime);
+}
+
 void TimeManagement::adjustForStability(double stability) {
     // If best move is unstable (keeps changing), extend time
     // stability: 1.0 = stable, 0.5 = half the iterations had same best move
@@ -207,26 +230,20 @@ void TimeManagement::adjustForScoreDrop(int scoreDrop) {
 }
 
 // Factor for number of legal moves - fewer moves = faster decision
-// Balance between saving time and ensuring adequate search depth
+// ONLY reduce time for truly forced moves (1 legal move).
+// All other positions get normal time to avoid losing mating sequences.
 double TimeManagement::legalMovesFactor(int numLegalMoves, bool inCheck) {
     if (numLegalMoves <= 1) return 0.0;  // Instant move (only 1 option)
-    if (numLegalMoves <= 2) return 0.3;  // Very fast - only 2 choices
-    if (numLegalMoves <= 4) return 0.5;  // Fast - few choices
-    if (numLegalMoves <= 6) return 0.7;  // Slightly fast
-    if (inCheck && numLegalMoves <= 10) return 0.6;  // Fast when in check
-    return 1.0;  // Normal time
+    return 1.0;  // Normal time for everything else
 }
 
 // Check if this is an "obvious" move situation
+// ONLY for truly forced moves: exactly 1 legal move.
+// With 2+ legal moves, ALWAYS search normally to avoid losing
+// mating sequences or making suboptimal choices.
 bool TimeManagement::isObviousMove(int numLegalMoves, bool inCheck, bool isRecapture) {
-    // Only one legal move - ALWAYS play instantly
+    // Only one legal move - ALWAYS play instantly (no choice to make)
     if (numLegalMoves <= 1) return true;
-    
-    // In check with very few options - play faster (but still search)
-    if (inCheck && numLegalMoves <= 2) return true;
-    
-    // Simple recapture with few options
-    if (isRecapture && numLegalMoves <= 2) return true;
     
     return false;
 }

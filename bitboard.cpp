@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
- * Copyright © 2025-2026 Diogo de Oliveira Almeida.
+ * This file is part of Deep Becky 2.0 - A UCI Chess Engine written by AI
+ * Copyright © 2025-2026 Diogo de O. Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,11 +13,11 @@
  * GNU General Public License for more details.
  */
 
-// bitboard.cpp - Bitboard tables implementation
+// Bitboard Table Implementation
 #include "bitboard.h"
 #include "magic.h"
 
-// ========================= Global tables =========================
+// ========================= Global Tables =========================
 U64 KNIGHT_ATK_BB[64];
 U64 KING_ATK_BB[64];
 U64 WPAWN_ATK_BB[64];
@@ -139,4 +139,3 @@ void initBitboards() {
     initAttackTables();
     initRayTables();
 }
-

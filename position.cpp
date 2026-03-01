@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
+ * This file is part of Deep Becky 2.0 - A UCI Chess Engine written by AI
+ * Copyright © 2025-2026 Diogo de O. Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,8 +13,10 @@
  * GNU General Public License for more details.
  */
 
-// position.cpp - Position class implementation
+// Position Class Implementation
 #include "position.h"
+#include "evaluate.h"
+#include "thread.h"
 #include "tt.h"
 #include "magic.h"
 #include <algorithm>
@@ -36,10 +38,7 @@ Zobrist::Zobrist() {
 Zobrist ZOB;
 
 // ========================= Hash Tables =========================
-PawnEntry pawnTable[PAWN_TT_SIZE];
-MaterialEntry materialTable[MATERIAL_TT_SIZE];
-KillerTable killers;
-int history_heur[2][64][64];
+// Per-thread tables are in SearchThread (thread.h)
 
 // ========================= SEE Helpers =========================
 namespace {
@@ -71,7 +70,6 @@ Position::Position() {
     initBitboards();
     Magic::init();
     clearTT();
-    clearHeuristics();
     repetitionHistory.reserve(MAX_STACK);
     plies_since_null = 0;
     setStartPos();
@@ -96,7 +94,7 @@ uint64_t Position::computeHash() const {
 // ========================= FEN =========================
 void Position::setStartPos() {
     if (!setFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")) {
-        std::cout << "info string falha ao carregar FEN inicial" << std::endl;
+        std::cout << "info string failed to load starting FEN" << std::endl;
     }
 }
 
@@ -240,6 +238,26 @@ bool Position::setFEN(const std::string& fen) {
         }
     }
 
+    // Compute incremental evaluation scores
+    psqtMG = 0;
+    psqtEG = 0;
+    materialW = 0;
+    materialB = 0;
+    phaseCount = 0;
+    for (int p = WPAWN; p <= BKING; ++p) {
+        U64 bb = bitboards[p];
+        while (bb) {
+            int sqi = pop_lsb(&bb);
+            psqtMG += Eval::PSQT_MG[p][sqi];
+            psqtEG += Eval::PSQT_EG[p][sqi];
+            if (p != WKING && p != BKING) {
+                if (isWhitePiece(p)) materialW += PIECE_VALUE[p];
+                else                 materialB += PIECE_VALUE[p];
+            }
+            phaseCount += Eval::PHASE_WEIGHT[p];
+        }
+    }
+
     repetitionHistory.clear();
     repetitionHistory.push_back({hash, 0});
     plies_since_null = 0;
@@ -261,6 +279,11 @@ void Position::makeMove(const Move& m) {
     u.repetition_before = repetitionHistory.empty() ? 0 : repetitionHistory.back().repetition;
     u.plies_from_null_before = plies_since_null;
     u.was_null = false;
+    u.psqtMG_before = psqtMG;
+    u.psqtEG_before = psqtEG;
+    u.materialW_before = materialW;
+    u.materialB_before = materialB;
+    u.phaseCount_before = phaseCount;
 
     int from_sq = moveFrom(m);
     int to_sq = moveTo(m);
@@ -280,6 +303,10 @@ void Position::makeMove(const Move& m) {
     hash ^= ZOB.piece[piece][from_sq];
     piece_board[from_sq] = EMPTY;
 
+    // Incremental: remove piece PST from source square
+    psqtMG -= Eval::PSQT_MG[piece][from_sq];
+    psqtEG -= Eval::PSQT_EG[piece][from_sq];
+
     if (piece == WPAWN || piece == BPAWN) {
         pawnKey ^= ZOB.piece[piece][from_sq];
     }
@@ -294,6 +321,15 @@ void Position::makeMove(const Move& m) {
         hash ^= ZOB.piece[u.captured_piece][cap_sq];
         piece_board[cap_sq] = EMPTY;
 
+        // Incremental: remove captured piece
+        psqtMG -= Eval::PSQT_MG[u.captured_piece][cap_sq];
+        psqtEG -= Eval::PSQT_EG[u.captured_piece][cap_sq];
+        if (u.captured_piece != WKING && u.captured_piece != BKING) {
+            if (isWhitePiece(u.captured_piece)) materialW -= PIECE_VALUE[u.captured_piece];
+            else                                materialB -= PIECE_VALUE[u.captured_piece];
+            phaseCount -= Eval::PHASE_WEIGHT[u.captured_piece];
+        }
+
         if (u.captured_piece == WPAWN || u.captured_piece == BPAWN) {
             pawnKey ^= ZOB.piece[u.captured_piece][cap_sq];
         }
@@ -306,6 +342,22 @@ void Position::makeMove(const Move& m) {
     set_bit(color_bitboards[us], to_sq);
     hash ^= ZOB.piece[landing_piece][to_sq];
     piece_board[to_sq] = landing_piece;
+
+    // Incremental: add landing piece PST at destination
+    psqtMG += Eval::PSQT_MG[landing_piece][to_sq];
+    psqtEG += Eval::PSQT_EG[landing_piece][to_sq];
+
+    // Handle promotion: pawn was removed, promoted piece added
+    if (movePromotion(m)) {
+        if (us == WHITE) {
+            materialW -= PIECE_VALUE[piece];          // remove pawn value
+            materialW += PIECE_VALUE[landing_piece];   // add promoted piece value
+        } else {
+            materialB -= PIECE_VALUE[piece];
+            materialB += PIECE_VALUE[landing_piece];
+        }
+        phaseCount += Eval::PHASE_WEIGHT[landing_piece]; // pawn has 0 phase weight
+    }
 
     if (landing_piece == WPAWN || landing_piece == BPAWN) {
         pawnKey ^= ZOB.piece[landing_piece][to_sq];
@@ -330,6 +382,12 @@ void Position::makeMove(const Move& m) {
         set_bit(color_bitboards[us], r_to);
         hash ^= ZOB.piece[rook_piece][r_to];
         piece_board[r_to] = rook_piece;
+
+        // Incremental: rook moves during castling
+        psqtMG -= Eval::PSQT_MG[rook_piece][r_from];
+        psqtEG -= Eval::PSQT_EG[rook_piece][r_from];
+        psqtMG += Eval::PSQT_MG[rook_piece][r_to];
+        psqtEG += Eval::PSQT_EG[rook_piece][r_to];
     }
 
     ep_file = 0;
@@ -382,6 +440,13 @@ void Position::undoMove(const Move& m) {
     fullmove = u.fullmove_before;
     hash = u.hash_before;
     pawnKey = u.pawnKey_before;
+
+    // Restore incremental evaluation state
+    psqtMG = u.psqtMG_before;
+    psqtEG = u.psqtEG_before;
+    materialW = u.materialW_before;
+    materialB = u.materialB_before;
+    phaseCount = u.phaseCount_before;
 
     int from_sq = moveFrom(m);
     int to_sq = moveTo(m);
@@ -704,10 +769,24 @@ void Position::initBook() {}
 std::string Position::bookKey() const { return ""; }
 
 bool Position::timeUp() const {
+    // Check global stop flag first (set by other threads or UCI stop)
+    if (Threads.stop.load(std::memory_order_relaxed)) return true;
+    // Never stop on time while pondering (wait for ponderhit or stop)
+    if (Threads.ponder.load(std::memory_order_relaxed)) return false;
+    // Only main thread checks the clock
+    if (thread && thread->idx != 0) return false;
     if (time_limit_ms <= 0) return false;
     auto now = std::chrono::high_resolution_clock::now();
     long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
     return ms >= time_limit_ms;
+}
+
+void Position::clearHeuristics() {
+    if (thread) {
+        thread->killers.clear();
+        std::memset(thread->history_heur, 0, sizeof(thread->history_heur));
+    }
+    counterMoves.clear();
 }
 
 bool Position::isFiftyMoveDraw() const {
@@ -792,6 +871,9 @@ bool Position::isDraw(int ply) {
 
 // ========================= SEE Wrapper =========================
 bool Position::SEE(const Move& m, int threshold) const {
+    // Optimized threshold-based SEE
+    // Returns true if SEE value >= threshold
+    
     if (!moveIsCapture(m)) return 0 >= threshold;
 
     const int from_sq = moveFrom(m);

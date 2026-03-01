@@ -1,4 +1,4 @@
-# Makefile — Deep Becky 1.2
+# Makefile — Deep Becky 2.0
 # Works on both MSYS2/MinGW and Windows CMD/PowerShell
 #
 # USAGE:
@@ -32,15 +32,15 @@ endif
 
 # Compiler and target
 CXX       := g++
-TARGET    := deepbecky-v1.2-windows-x64.exe
+TARGET    := deepbecky-v2.0-windows-x64.exe
 
 # Source files
 SRC       := main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp \
-             evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp
+             evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp thread.cpp
 
 # Headers
 HEADERS   := types.h magic.h bitboard.h position.h movegen.h movepick.h \
-             evaluate.h search.h tt.h uci.h timeman.h
+             evaluate.h search.h tt.h uci.h timeman.h thread.h
 
 # Directories
 BUILD_DIR := build
@@ -85,7 +85,7 @@ CXXFLAGS_BASE := $(CXXSTD) $(OPT) $(WARN) $(ARCHFLAGS) -I.
 LDFLAGS_BASE  := $(STRIPFLAG) -flto=$(LTO_JOBS)
 
 ifeq ($(STATIC),1)
-  LDFLAGS_BASE += -static -static-libgcc -static-libstdc++
+  LDFLAGS_BASE += -static -static-libgcc -static-libstdc++ -lpthread
 endif
 
 # PGO flags
@@ -204,7 +204,7 @@ debug: clean all
 
 info:
 	@echo ============================================
-	@echo   Deep Becky 1.2 Build Configuration
+	@echo   Deep Becky 2.0 Build Configuration
 	@echo ============================================
 	@echo CXX       = $(CXX)
 	@echo PROFILE   = $(PROFILE)
@@ -219,7 +219,7 @@ info:
 	@echo ============================================
 
 help:
-	@echo Deep Becky 1.2 - Build Commands
+	@echo Deep Becky 2.0 - Build Commands
 	@echo.
 	@echo   mingw32-make                     - Simple build (portable)
 	@echo   mingw32-make PROFILE=bmi2        - Build for modern CPUs

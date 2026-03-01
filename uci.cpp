@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
+ * This file is part of Deep Becky 2.0 - A UCI Chess Engine written by AI
+ * Copyright © 2025-2026 Diogo de O. Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,8 +13,9 @@
  * GNU General Public License for more details.
  */
 
-// uci.cpp - UCI Protocol Implementation 
+// UCI Protocol Implementation (Lazy SMP)
 #include "uci.h"
+#include "thread.h"
 #include "tt.h"
 #include "search.h"
 #include "movegen.h"
@@ -41,9 +42,11 @@ std::string toLower(const std::string& str) {
 // UCI Commands
 // =============================================================================
 void cmdUci() {
-    std::cout << "id name Deep Becky 1.0" << std::endl;
+    std::cout << "id name Deep Becky 2.0" << std::endl;
     std::cout << "id author Diogo de Oliveira Almeida" << std::endl;
     std::cout << "option name Hash type spin default 64 min 1 max 4096" << std::endl;
+    std::cout << "option name Threads type spin default 1 min 1 max 256" << std::endl;
+    std::cout << "option name Ponder type check default true" << std::endl;
     std::cout << "uciok" << std::endl;
     std::cout.flush();
 }
@@ -76,18 +79,22 @@ void cmdSetOption(Position& engine, std::istringstream& is) {
         mb = std::max(1, std::min(mb, 4096));
         TT.resize(static_cast<size_t>(mb));
     }
-    
+    else if (optNameLower == "threads") {
+        int n = std::stoi(optValue);
+        n = std::max(1, std::min(n, 256));
+        Threads.set(static_cast<size_t>(n));
+    }
+    else if (optNameLower == "ponder") {
+        Threads.ponderEnabled = (toLower(optValue) == "true");
+    }
 }
 
 void cmdNewGame(Position& engine) {
+    Threads.waitForSearchFinished();
     TT.clear();
     TT.newSearch();
     engine.setStartPos();
-    
-    // Clear history and killers using globals
-    std::memset(history_heur, 0, sizeof(history_heur));
-    killers.clear();
-    engine.counterMoves = {};
+    Threads.clear();
 }
 
 void cmdPosition(Position& engine, std::istringstream& is) {
@@ -112,7 +119,7 @@ void cmdPosition(Position& engine, std::istringstream& is) {
         }
         
         if (fenParts.empty()) {
-            std::cout << "info string Missing FEN in position command" << std::endl;
+            std::cout << "info string missing FEN in position command" << std::endl;
             return;
         }
         
@@ -124,7 +131,7 @@ void cmdPosition(Position& engine, std::istringstream& is) {
         }
         
         if (!engine.setFEN(fen)) {
-            std::cout << "info string Invalid FEN: " << fen << std::endl;
+            std::cout << "info string invalid FEN: " << fen << std::endl;
             return;
         }
         
@@ -144,8 +151,12 @@ void cmdPosition(Position& engine, std::istringstream& is) {
 }
 
 void cmdGo(Position& engine, std::istringstream& is) {
+    // Wait for any previous search to finish
+    Threads.waitForSearchFinished();
+
     SearchLimits limits;
     limits.startTime = now();
+    bool ponderMode = false;
     
     std::string token;
     
@@ -159,6 +170,7 @@ void cmdGo(Position& engine, std::istringstream& is) {
         else if (key == "movetime") is >> limits.movetime;
         else if (key == "depth") is >> limits.depth;
         else if (key == "infinite") limits.infinite = true;
+        else if (key == "ponder") ponderMode = true;
         else if (key == "perft") {
             int perftDepth = 1;
             is >> perftDepth;
@@ -168,7 +180,7 @@ void cmdGo(Position& engine, std::istringstream& is) {
         }
     }
     
-    // Calculate game ply (rough estimate from fullmove counter)
+    // Calculate game ply
     int gamePly = (engine.fullmove - 1) * 2 + (engine.white_to_move ? 0 : 1);
     
     // Initialize time management
@@ -178,14 +190,49 @@ void cmdGo(Position& engine, std::istringstream& is) {
     int maxDepth = (limits.depth > 0 ? limits.depth : MAX_PLY);
     int searchTime = static_cast<int>(TimeMgr.maximum());
     
-    Move bestMove = engine.search(maxDepth, searchTime);
-    
-    if (moveIsNone(bestMove)) {
-        std::cout << "bestmove 0000" << std::endl;
-    } else {
-        std::cout << "bestmove " << engine.moveToUCI(bestMove) << std::endl;
+    // In ponder mode, search without time limit until ponderhit or stop
+    if (ponderMode) {
+        searchTime = 0;  // No time limit during pondering
+        maxDepth = MAX_PLY;
     }
-    std::cout.flush();
+    
+    // Start async search via ThreadPool
+    // The main search thread will print bestmove when done
+    Threads.startThinking(engine, maxDepth, searchTime, ponderMode);
+}
+
+void cmdStop() {
+    Threads.ponder.store(false, std::memory_order_relaxed);
+    Threads.stop.store(true, std::memory_order_relaxed);
+    // Wake main thread if it's waiting for ponderhit
+    if (Threads.main()) {
+        std::lock_guard<std::mutex> lk(Threads.main()->mtx);
+        Threads.main()->cv.notify_one();
+    }
+    Threads.waitForSearchFinished();
+}
+
+void cmdPonderHit(Position& engine) {
+    // Opponent played the expected move - switch from ponder to normal search
+    Threads.ponder.store(false, std::memory_order_relaxed);
+
+    // Reinitialize time management now that real clock starts
+    // The search will pick up time checking on the next node
+    // We need to set a proper time limit for the main thread
+    if (Threads.main()) {
+        // Set the start time to NOW (pondering time doesn't count)
+        auto now_time = std::chrono::high_resolution_clock::now();
+        Threads.main()->pos.start_time = now_time;
+
+        // Calculate proper time allocation from the limits stored earlier
+        int timeMs = static_cast<int>(TimeMgr.optimum());
+        Threads.main()->pos.time_limit_ms = timeMs;
+        Threads.searchTimeMs = timeMs;
+
+        // Wake main thread if it's waiting for ponderhit after search completed
+        std::lock_guard<std::mutex> lk(Threads.main()->mtx);
+        Threads.main()->cv.notify_one();
+    }
 }
 
 void cmdPerft(Position& engine, std::istringstream& is) {
@@ -243,19 +290,27 @@ void loop(Position& engine) {
         } else if (cmdLower == "isready") {
             cmdIsReady();
         } else if (cmdLower == "setoption") {
+            Threads.waitForSearchFinished();
             cmdSetOption(engine, is);
         } else if (cmdLower == "ucinewgame") {
             cmdNewGame(engine);
         } else if (cmdLower == "position") {
+            Threads.waitForSearchFinished();
             cmdPosition(engine, is);
         } else if (cmdLower == "go") {
             cmdGo(engine, is);
+        } else if (cmdLower == "stop") {
+            cmdStop();
+        } else if (cmdLower == "ponderhit") {
+            cmdPonderHit(engine);
         } else if (cmdLower == "perft") {
+            Threads.waitForSearchFinished();
             cmdPerft(engine, is);
         } else if (cmdLower == "quit") {
+            Threads.stop.store(true, std::memory_order_relaxed);
+            Threads.waitForSearchFinished();
             break;
         } else if (cmdLower == "d" || cmdLower == "display") {
-            // Debug command to show the board
             std::cout << "info string Display board not implemented yet" << std::endl;
         }
     }

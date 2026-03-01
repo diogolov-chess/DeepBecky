@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
- * Copyright © 2025-2026 Diogo de Oliveira Almeida.
+ * This file is part of Deep Becky 2.0 - A UCI Chess Engine written by AI
+ * Copyright © 2025-2026 Diogo de O. Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  */
 
-// bitboard.h - Bitboard operations
+// Bitboard Operations
 #ifndef DEEPBECKY_BITBOARD_H
 #define DEEPBECKY_BITBOARD_H
 
@@ -23,7 +23,7 @@
 #include <intrin.h>
 #endif
 
-// ========================= Constantes de Bitboard =========================
+// ========================= Bitboard Constants =========================
 constexpr U64 FileABB = 0x0101010101010101ULL;
 constexpr U64 FileBBB = FileABB << 1;
 constexpr U64 FileCBB = FileABB << 2;
@@ -42,7 +42,7 @@ constexpr U64 Rank6BB = Rank1BB << (8 * 5);
 constexpr U64 Rank7BB = Rank1BB << (8 * 6);
 constexpr U64 Rank8BB = Rank1BB << (8 * 7);
 
-// ========================= Basic operations =========================
+// ========================= Basic Operations =========================
 inline void set_bit(U64& bb, int sq) { bb |= (1ULL << sq); }
 inline void pop_bit(U64& bb, int sq) { bb &= ~(1ULL << sq); }
 inline bool get_bit(U64 bb, int sq) { return (bb >> sq) & 1; }
@@ -97,13 +97,13 @@ inline U64 shift(U64 b) {
          : 0;
 }
 
-// ========================= Attack tables (non-sliding) =========================
+// ========================= Non-sliding Attack Tables =========================
 extern U64 KNIGHT_ATK_BB[64];
 extern U64 KING_ATK_BB[64];
 extern U64 WPAWN_ATK_BB[64];
 extern U64 BPAWN_ATK_BB[64];
 
-// ========================= Ray tables (for pins/checks) =========================
+// ========================= Ray Tables (for pins/checks) =========================
 extern U64 BETWEEN_BB[64][64];  // Squares between two squares (exclusive)
 extern U64 LINE_BB[64][64];     // Full line through two squares
 extern U64 RAY_BB[64][8];       // Directional rays (N,NE,E,SE,S,SW,W,NW)
@@ -113,7 +113,7 @@ void initBitboards();
 void initAttackTables();
 void initRayTables();
 
-// ========================= Attack functions (inline for performance) =========================
+// ========================= Attack Functions (inline for performance) =========================
 inline U64 pawnAttacks(Color c, int sq) {
     return c == WHITE ? WPAWN_ATK_BB[sq] : BPAWN_ATK_BB[sq];
 }
@@ -121,7 +121,7 @@ inline U64 pawnAttacks(Color c, int sq) {
 inline U64 knightAttacks(int sq) { return KNIGHT_ATK_BB[sq]; }
 inline U64 kingAttacks(int sq) { return KING_ATK_BB[sq]; }
 
-// Magic attacks - declarados em magic.h
+// Magic attacks - declared in magic.h
 namespace Magic {
     U64 bishopAttacks(int sq, U64 occ);
     U64 rookAttacks(int sq, U64 occ);
@@ -134,4 +134,3 @@ inline U64 queenAttacks(int sq, U64 occ) {
 }
 
 #endif // DEEPBECKY_BITBOARD_H
-

@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
+ * This file is part of Deep Becky 2.0 - A UCI Chess Engine written by AI
+ * Copyright © 2025-2026 Diogo de O. Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,8 +13,9 @@
  * GNU General Public License for more details.
  */
 
-// movepick.cpp - Move Ordering
+// Move Ordering
 #include "movepick.h"
+#include "thread.h"
 #include <algorithm>
 
 // ========================= MovePicker Implementation =========================
@@ -24,12 +25,26 @@ MovePicker::MovePicker(Position& position, Move* moves, int count, const Move& t
     
     int us = pos.white_to_move ? WHITE : BLACK;
     
-    // Check if TT move is in the list
+    // Check if TT move is in the list (match by from+to squares only,
+    // since TT stores packed 16-bit moves without capture/doublepush flags).
+    // When found, replace ttMove with the generated move (has correct flags).
     if (!moveIsNone(ttMove)) {
         for (int i = 0; i < count; ++i) {
-            if (moves[i] == ttMove) { 
-                ttAvailable = true; 
-                break; 
+            if ((moves[i].squares & 0x0FFF) == (ttMove.squares & 0x0FFF)
+                && moves[i].flags == ttMove.flags) {
+                ttMove = moves[i]; // use generated move with correct flags
+                ttAvailable = true;
+                break;
+            }
+        }
+        // Fallback: match by from+to only (for promotions where flags differ slightly)
+        if (!ttAvailable) {
+            for (int i = 0; i < count; ++i) {
+                if ((moves[i].squares & 0x0FFF) == (ttMove.squares & 0x0FFF)) {
+                    ttMove = moves[i]; // use generated move
+                    ttAvailable = true;
+                    break;
+                }
             }
         }
     }
@@ -38,7 +53,8 @@ MovePicker::MovePicker(Position& position, Move* moves, int count, const Move& t
     for (int i = 0; i < count; ++i) {
         Move m = moves[i];
         
-        // Skip TT move (will be returned first)
+        // Skip TT move (will be returned first) - match by from+to AND flags
+        // Using full equality preserves underpromotions (same from+to, different promo)
         if (ttAvailable && m == ttMove) continue;
 
         if (moveIsCapture(m)) {
@@ -68,13 +84,13 @@ MovePicker::MovePicker(Position& position, Move* moves, int count, const Move& t
         } else {
             // Quiet moves - scored by history heuristic
             quiets[quietCount] = m;
-            quietScores[quietCount++] = history_heur[us][moveFrom(m)][moveTo(m)];
+            quietScores[quietCount++] = pos.thread->history_heur[us][moveFrom(m)][moveTo(m)];
         }
     }
 
     // Get killer moves for this ply
-    killerCand[0] = killers.killer[0][ply];
-    killerCand[1] = killers.killer[1][ply];
+    killerCand[0] = pos.thread->killers.killer[0][ply];
+    killerCand[1] = pos.thread->killers.killer[1][ply];
 }
 
 Move MovePicker::selectBest(Move* list, int* scores, int count, int& idx) {
@@ -103,7 +119,8 @@ Move MovePicker::selectBest(Move* list, int* scores, int count, int& idx) {
 
 bool MovePicker::useKiller(const Move& k, Move& out) {
     // Killer must exist, not be a capture, and not be TT move
-    if (moveIsNone(k) || moveIsCapture(k) || (ttAvailable && k == ttMove))
+    if (moveIsNone(k) || moveIsCapture(k)
+        || (ttAvailable && k == ttMove))
         return false;
     
     // Find killer in quiet moves

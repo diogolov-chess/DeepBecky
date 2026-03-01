@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
+ * This file is part of Deep Becky 2.0 - A UCI Chess Engine written by AI
+ * Copyright © 2025-2026 Diogo de O. Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,13 +13,12 @@
  * GNU General Public License for more details.
  */
 
-// timeman.h - Time Management Header 
 #ifndef DEEPBECKY_TIMEMAN_H
 #define DEEPBECKY_TIMEMAN_H
 
 // ============================================================
-// TimeManagement - Dynamic Time Control (Stockfish-style)
-// 
+// TimeManagement - Dynamic Time Control
+//
 // Features:
 // - Optimum time (target) vs Maximum time (hard limit)
 // - Move importance based on game phase
@@ -61,6 +60,9 @@ public:
     // Get optimum thinking time (target)
     TimePoint optimum() const { return optimumTime; }
     
+    // Set optimum thinking time (for mate extension)
+    void setOptimum(TimePoint t) { optimumTime = t; }
+    
     // Get maximum thinking time (hard limit)
     TimePoint maximum() const { return maximumTime; }
     
@@ -79,6 +81,9 @@ public:
     
     // Scale time based on score drop (if score drops, think longer)
     void adjustForScoreDrop(int scoreDrop);
+    
+    // Extend time for winning endgames that need deeper search for mate
+    void adjustForWinningEndgame(int eval, int phaseCount);
     
     // Scale time for number of legal moves - fewer moves = less time
     // Returns multiplier: 0.0 = instant move, 1.0 = normal time

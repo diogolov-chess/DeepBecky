@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
+ * This file is part of Deep Becky 2.0 - A UCI Chess Engine written by AI
+ * Copyright © 2025-2026 Diogo de O. Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  */
 
-// position.h - Board representation
+// Board Representation
 #ifndef DEEPBECKY_POSITION_H
 #define DEEPBECKY_POSITION_H
 
@@ -26,6 +26,7 @@
 
 // Forward declarations
 struct TTEntry;
+struct SearchThread;
 
 // ========================= Zobrist =========================
 struct Zobrist {
@@ -46,8 +47,6 @@ struct PawnEntry {
     int16_t scoreMG = 0;
     int16_t scoreEG = 0;
 };
-extern PawnEntry pawnTable[PAWN_TT_SIZE];
-
 struct MaterialEntry {
     uint64_t key = 0;
     int16_t scoreMG = 0;
@@ -55,15 +54,12 @@ struct MaterialEntry {
     int8_t phase = 0;
     int8_t flags = 0;  // bit 0: white bishop pair, bit 1: black bishop pair
 };
-extern MaterialEntry materialTable[MATERIAL_TT_SIZE];
 
 // ========================= Heuristics =========================
 struct KillerTable {
     Move killer[2][MAX_PLY];
     void clear() { std::memset(killer, 0, sizeof(killer)); }
 };
-extern KillerTable killers;
-extern int history_heur[2][64][64];
 
 // ========================= Position =========================
 class Position {
@@ -76,13 +72,20 @@ public:
     // Game state
     bool white_to_move = true;
     int castling = 0b1111;  // KQkq
-    int ep_file = 0;        // 1..8 if EP exists
+    int ep_file = 0;        // 1..8 se existe EP
     int king_sq[COLOR_NB]{4, 60};
     int halfmove = 0;
     int fullmove = 1;
     uint64_t hash = 0;
     uint64_t pawnKey = 0;
     uint64_t materialKey = 0;
+
+    // Incremental evaluation scores (from WHITE's perspective)
+    int psqtMG = 0;       // accumulated PST midgame
+    int psqtEG = 0;       // accumulated PST endgame
+    int materialW = 0;    // white material total (no king)
+    int materialB = 0;    // black material total (no king)
+    int phaseCount = 0;   // game phase (sum of piece weights)
 
     // Repetition history
     struct RepState {
@@ -92,6 +95,9 @@ public:
     std::vector<RepState> repetitionHistory;
     int plies_since_null = 0;
 
+    // Thread ownership (set when used inside SearchThread)
+    SearchThread* thread = nullptr;
+
     // Search state
     int contempt = 0;
     bool rootSideIsWhite = true;
@@ -100,6 +106,12 @@ public:
     bool stopSearching = false;
     std::chrono::high_resolution_clock::time_point start_time;
     int time_limit_ms = 0;
+    
+    // Root best move - tracked directly inside pvs() at ply 0.
+    // This avoids reading the best move from the shared TT after search,
+    // which can be corrupted by other threads overwriting the entry.
+    Move rootBestMove = MOVE_NONE;
+    int rootBestScore = -INF_SCORE;
     
     // Search tables
     int evalStack[MAX_PLY]{};
@@ -123,6 +135,12 @@ public:
         int repetition_before = 0;
         int plies_from_null_before = 0;
         bool was_null = false;
+        // Incremental evaluation state
+        int psqtMG_before = 0;
+        int psqtEG_before = 0;
+        int materialW_before = 0;
+        int materialB_before = 0;
+        int phaseCount_before = 0;
     };
     Undo undoStack[MAX_STACK];
     int undoTop = 0;
@@ -156,8 +174,11 @@ public:
 
     // Search interface
     Move search(int maxDepth, int timeMs);
-    int pvs(int depth, int alpha, int beta, int ply);
+    int pvs(int depth, int alpha, int beta, int ply, bool cutNode = false, Move excludedMove = MOVE_NONE);
     int qsearch(int alpha, int beta, int ply);
+
+    // Search stack for improving heuristic
+    int searchStack[MAX_PLY + 10]; // static eval at each ply
 
     // Evaluation
     int evaluate();
@@ -175,10 +196,7 @@ public:
 
     // TT/Heuristics
     void clearTT();
-    void clearHeuristics() {
-        std::memset(history_heur, 0, sizeof(history_heur));
-        killers.clear();
-    }
+    void clearHeuristics();
 
     // Time management
     bool timeUp() const;

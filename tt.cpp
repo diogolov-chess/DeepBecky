@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
+ * This file is part of Deep Becky 2.0 - A UCI Chess Engine written by AI
+ * Copyright © 2025-2026 Diogo de O. Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  */
 
-// tt.cpp - Transposition Table Implementation
+// Transposition Table with Clusters Implementation
 #include "tt.h"
 #include <iostream>
 #include <cstdlib>
@@ -27,9 +27,9 @@ TranspositionTable TT;
 
 // ========================= Implementation =========================
 
-TranspositionTable::TranspositionTable() 
-    : table_(nullptr), entryCount_(0), generation_(0) {
-    resize(64);  // 64 MB by default
+TranspositionTable::TranspositionTable()
+    : table_(nullptr), clusterCount_(0), generation8_(0) {
+    resize(64);  // 64 MB default
 }
 
 TranspositionTable::~TranspositionTable() {
@@ -45,16 +45,11 @@ TranspositionTable::~TranspositionTable() {
 
 void TranspositionTable::resize(size_t sizeMB) {
     if (sizeMB < 1) sizeMB = 1;
-    if (sizeMB > 32768) sizeMB = 32768;  // Max 32 GB
-    
-    size_t newEntryCount = (sizeMB * 1024ULL * 1024ULL) / sizeof(TTEntry);
-    
-    // Round to power of 2 for better distribution
-    size_t power2 = 1;
-    while (power2 < newEntryCount) power2 <<= 1;
-    newEntryCount = power2 >> 1;  // Use smaller power to not exceed sizeMB
-    if (newEntryCount < 1024) newEntryCount = 1024;
-    
+    if (sizeMB > 32768) sizeMB = 32768;
+
+    size_t newClusterCount = sizeMB * 1024ULL * 1024ULL / sizeof(TTCluster);
+    if (newClusterCount < 1024) newClusterCount = 1024;
+
     if (table_) {
 #if defined(_WIN32)
         _aligned_free(table_);
@@ -63,58 +58,88 @@ void TranspositionTable::resize(size_t sizeMB) {
 #endif
         table_ = nullptr;
     }
-    
-    // Allocate with cache alignment
+
+    // Allocate cache-aligned memory (32 bytes = cluster size)
 #if defined(_WIN32)
-    table_ = static_cast<TTEntry*>(_aligned_malloc(newEntryCount * sizeof(TTEntry), 64));
+    table_ = static_cast<TTCluster*>(
+        _aligned_malloc(newClusterCount * sizeof(TTCluster), 32));
 #else
-    table_ = static_cast<TTEntry*>(aligned_alloc(64, newEntryCount * sizeof(TTEntry)));
+    table_ = static_cast<TTCluster*>(
+        aligned_alloc(32, newClusterCount * sizeof(TTCluster)));
 #endif
-    
+
     if (!table_) {
         std::cerr << "Failed to allocate " << sizeMB << " MB for TT" << std::endl;
-        entryCount_ = 0;
+        clusterCount_ = 0;
         return;
     }
-    
-    entryCount_ = newEntryCount;
+
+    clusterCount_ = newClusterCount;
     clear();
 }
 
 void TranspositionTable::clear() {
-    if (table_ && entryCount_ > 0) {
-        // Use value-initialization instead of memset for proper clearing
-        for(size_t i = 0; i < entryCount_; ++i){
-            table_[i] = TTEntry{};
-        }
+    if (table_ && clusterCount_ > 0) {
+        // Cast to void* to clear raw memory safely (all zeros = valid empty state)
+        std::memset(static_cast<void*>(table_), 0, clusterCount_ * sizeof(TTCluster));
     }
-    generation_ = 0;
+    generation8_ = 0;
 }
 
+// Probe the transposition table.
+// Returns a pointer to the matching entry (or replacement candidate).
+// Sets 'found' to true if the position's key matches.
 TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
-    TTEntry* entry = &table_[index(key)];
-    found = (entry->key == key);
-    return entry;
-}
+    TTEntry* const tte = firstEntry(key);
+    const uint16_t k16 = uint16_t(key);
 
-void TranspositionTable::store(uint64_t key, int depth, int score, TTFlag bound, 
-                               uint16_t moveData, uint8_t moveFlags) {
-    TTEntry* entry = &table_[index(key)];
-    entry->save(key, depth, score, bound, moveData, moveFlags, generation_);
-}
-
-int TranspositionTable::hashfull() const {
-    if (!table_ || entryCount_ == 0) return 0;
-    
-    int used = 0;
-    size_t sampleSize = std::min(entryCount_, size_t(1000));
-    
-    for (size_t i = 0; i < sampleSize; ++i) {
-        if (!table_[i].isEmpty()) {
-            uint8_t age = (TT_GEN_CYCLE + generation_ - table_[i].generation()) & (TT_GEN_CYCLE - 1);
-            if (age <= 1) ++used;
+    // Search the cluster for a matching key
+    for (int i = 0; i < CLUSTER_SIZE; ++i) {
+        if (tte[i].key16 == k16) {
+            found = tte[i].isOccupied();
+            return &tte[i];
         }
     }
-    
-    return (used * 1000) / static_cast<int>(sampleSize);
+
+    // Not found — find the best replacement candidate
+    // Replace the entry with lowest (depth - 8 * relativeAge)
+    TTEntry* replace = tte;
+    for (int i = 1; i < CLUSTER_SIZE; ++i) {
+        if (replace->depth8 - replace->relativeAge(generation8_)
+            > tte[i].depth8 - tte[i].relativeAge(generation8_))
+            replace = &tte[i];
+    }
+
+    found = false;
+    return replace;
+}
+
+// Store a position in the TT
+void TranspositionTable::store(uint64_t key, int depth, int16_t score, TTFlag bound,
+                               uint16_t moveData, uint8_t moveFlags, int16_t eval, bool pvNode) {
+    // Probe to find the right entry (matching key or replacement candidate)
+    bool found;
+    TTEntry* tte = probe(key, found);
+
+    // Pack the move for storage
+    uint16_t packedMove = packTTMove(moveData, moveFlags);
+
+    tte->save(key, score, pvNode, bound, depth, packedMove, eval, generation8_);
+}
+
+// Returns an approximation of hashtable occupation (permille).
+// Samples the first 1000 clusters.
+int TranspositionTable::hashfull() const {
+    if (!table_ || clusterCount_ == 0) return 0;
+
+    int cnt = 0;
+    size_t sampleClusters = std::min(clusterCount_, size_t(1000));
+    for (size_t i = 0; i < sampleClusters; ++i) {
+        for (int j = 0; j < CLUSTER_SIZE; ++j) {
+            cnt += table_[i].entry[j].isOccupied()
+                && table_[i].entry[j].relativeAge(generation8_) == 0;
+        }
+    }
+
+    return cnt * 1000 / (static_cast<int>(sampleClusters) * CLUSTER_SIZE);
 }

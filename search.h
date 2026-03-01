@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
+ * This file is part of Deep Becky 2.0 - A UCI Chess Engine written by AI
+ * Copyright © 2025-2026 Diogo de O. Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  */
 
-// search.h - Alpha-Beta Search
+// Alpha-Beta Search
 #ifndef DEEPBECKY_SEARCH_H
 #define DEEPBECKY_SEARCH_H
 
@@ -22,7 +22,7 @@
 // Forward declaration
 class Position;
 
-// Search is implemented as methods of Position
+// The search is implemented as Position methods
 // This header exists for organization
 
 // Search constants
@@ -37,10 +37,10 @@ void init();
 // Reduction function
 int reduction(bool improving, int depth, int moveCount);
 
-// Futility margin
+// Futility margin (conservative)
 int futilityMargin(int depth, bool improving);
 
-// Move count pruning threshold 
+// Move count pruning threshold (conservative)  
 int futilityMoveCount(bool improving, int depth);
 
 // Draw score with contempt

@@ -3,7 +3,7 @@
 <img src="assets/logo-deepbecky.png" alt="Deep Becky Logo" width="150"/>
 
 <h3>Deep Becky - UCI Chess Engine</h3>
-Version 1.2 — Architectural Restructure + Advanced Search & Time Management
+Version 2.0 — Lazy SMP Multi-Threading + Singular Extensions
 <br>
 
 SEE THE <strong>[LATEST VERSION UPDATE!][changelog]</strong>
@@ -27,18 +27,23 @@ The path was quite challenging - copying code from chat conversations to Notepad
 
 Today, Deep Becky is developed using **vibe coding** in VSCode, primarily with the AI **Claude Opus** and occasionally **ChatGPT Codex**. This workflow allows for a much faster and more fluid development cycle — writing, refactoring, and debugging code through natural conversation directly in the editor.
 
-Version 1.2 is a **major architectural restructure** of the engine, splitting the codebase from 8 files into **25 files** with proper header/implementation separation and dedicated modules for each subsystem. The search was significantly strengthened with many new pruning techniques (razoring, reverse futility, late move pruning, IID, SEE pruning), a pre-computed logarithmic LMR table, and dynamic contempt that scales from 20 to 200 cp based on evaluation. A professional Stockfish-style **TimeManagement** class handles time allocation with stability/score-drop adjustments, obvious move detection, and game phase awareness. The **TranspositionTable** now supports dynamic sizing via UCI `Hash` option (1–4096 MB) with cache-aligned allocation and prefetching. New bitboard infrastructure (BETWEEN_BB, LINE_BB, RAY_BB) enables pin-aware legal move generation and faster check evasion.
+Version 2.0 is a **major strength upgrade**, adding **Lazy SMP multi-threading** for parallel search on modern multi-core CPUs. Each thread owns its own Position copy and per-thread heuristic tables (killers, history, pawn hash), communicating only through the shared transposition table — zero contention in hot paths. A **vote-based best thread selection** algorithm combines search depth and score to pick the optimal result across all threads.
 
-Main v1.2 highlights:
-- Full architectural restructure: 25 files with proper H/CPP separation and namespaces
-- Search: LMR log table, razoring, reverse futility pruning, IID, late move pruning, futility pruning, SEE pruning
-- Dynamic contempt: scales 20–200 cp based on evaluation advantage
-- Stockfish-style TimeManagement: optimum/maximum time, stability adjustment, obvious move detection
-- Configurable TT: dynamic Hash sizing (1–4096 MB), cache-aligned, prefetch, hashfull reporting
-- Bitboard infrastructure: BETWEEN_BB, LINE_BB, RAY_BB for pin detection and check evasion
-- Pawn hash table: caches pawn structure evaluation for efficiency
-- Lazy evaluation: skips detailed eval when material advantage is decisive (non-endgame)
-- Perft command for correctness testing
+The search engine gained several advanced techniques: **Singular Extensions** detect when the TT move is the only good move and extend its search (with double extensions and MultiCut), **ProbCut** prunes positions where a shallow capture search confirms a large beta excess, and **Null Move Verification Search** at high depths prevents zugzwang-related errors. The transposition table was **completely redesigned** with 10-byte entries (down from 16), 3 entries per 32-byte cache-aligned cluster, PV node tracking, and static eval storage that saves full evaluate() calls on TT hits. **Ponder support** was added for continuous analysis during the opponent's turn. Evaluation was enhanced with **incremental PSQT** (piece-square tables updated in makeMove/undoMove), a **non-linear quadratic king safety** model where coordinated attackers are exponentially more dangerous, and **endgame mating evaluation** (KQ vs K, KR vs K) that guides the winning side toward checkmate.
+
+Main v2.0 highlights:
+- Lazy SMP multi-threading: UCI `Threads` option (1–256), per-thread tables, vote-based best thread
+- Ponder support: continuous analysis during opponent's turn
+- Singular Extensions: detect unique best move, double extensions, MultiCut pruning
+- ProbCut: shallow capture verification to prune positions far above beta
+- Null Move Verification Search: re-search at high depths to prevent zugzwang errors
+- Redesigned TT: 10-byte entries, 3-per-cluster (32-byte aligned), PV flag, static eval storage
+- Incremental PSQT evaluation: piece-square tables updated in makeMove/undoMove
+- Non-linear king safety: quadratic danger scaling with attacker synergy
+- Endgame mating evaluation: KQ vs K, KR vs K with king-to-corner guidance
+- History heuristic with gravity formula and history malus
+- IIR (Internal Iterative Reduction) replacing IID, with cut-node awareness
+- Enhanced LMR: history-based, cut-node, singular, and TT-capture adjustments
 
 ### How to Compile
 
@@ -96,12 +101,12 @@ make info                           # show current build configuration
 Using the **x64 Native Tools Command Prompt for VS 2022**:
 
 ```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp /Fe:deepbecky-v1.2-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp thread.cpp /Fe:deepbecky-v2.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
 ```
 
 **Without AVX2 (broader compatibility):**
 ```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp /Fe:deepbecky-v1.2-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp thread.cpp /Fe:deepbecky-v2.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
 ```
 
 **Requirements:** Visual Studio 2022 with C++ tools
@@ -124,12 +129,12 @@ make pgo PROFILE=native
 
 **Manual compilation (without Makefile):**
 ```bash
-g++ -O3 -std=c++17 -march=native -DNDEBUG -flto main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp -o deepbecky
+g++ -O3 -std=c++17 -march=native -DNDEBUG -flto main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp thread.cpp -o deepbecky -lpthread
 ```
 
 **Static linking (fully portable binary):**
 ```bash
-g++ -O3 -std=c++17 -march=native -DNDEBUG -flto -static -static-libgcc -static-libstdc++ main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp -o deepbecky
+g++ -O3 -std=c++17 -march=native -DNDEBUG -flto -static -static-libgcc -static-libstdc++ main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp thread.cpp -o deepbecky -lpthread
 ```
 
 ---
@@ -173,18 +178,23 @@ O caminho foi bastante desafiador - copiando código das conversas para o Notepa
 
 Hoje, a Deep Becky é desenvolvida utilizando **vibe coding** no VSCode, principalmente com a IA **Claude Opus** e ocasionalmente com o **ChatGPT Codex**. Esse fluxo de trabalho permite um ciclo de desenvolvimento muito mais rápido e fluido — escrevendo, refatorando e depurando código através de conversa natural diretamente no editor.
 
-A versão 1.2 é uma **grande reestruturação arquitetural** da engine, dividindo o código de 8 para **25 arquivos** com separação adequada header/implementação e módulos dedicados para cada subsistema. A busca foi significativamente fortalecida com muitas novas técnicas de poda (razoring, reverse futility, late move pruning, IID, poda SEE), tabela LMR logarítmica pré-computada e contempt dinâmico que escala de 20 a 200 cp baseado na avaliação. Uma classe profissional **TimeManagement** estilo Stockfish gerencia a alocação de tempo com ajustes de estabilidade/queda de score, detecção de lance óbvio e consciência de fase do jogo. A **TranspositionTable** agora suporta dimensionamento dinâmico via opção UCI `Hash` (1–4096 MB) com alocação alinhada ao cache e prefetching. Nova infraestrutura de bitboard (BETWEEN_BB, LINE_BB, RAY_BB) permite geração legal de lances consciente de cravadas e evasão de xeque mais rápida.
+A versão 2.0 é uma **grande atualização de força**, adicionando **Lazy SMP multi-threading** para busca paralela em CPUs modernas multi-core. Cada thread possui sua própria cópia de Position e tabelas heurísticas independentes (killers, histórico, hash de peões), comunicando-se apenas pela tabela de transposição compartilhada — zero contenção nos caminhos críticos. Um algoritmo de **seleção do melhor thread por votação** combina profundidade e score para escolher o resultado ótimo entre todas as threads.
 
-Principais destaques da v1.2:
-- Reestruturação arquitetural completa: 25 arquivos com separação H/CPP e namespaces
-- Busca: tabela log LMR, razoring, reverse futility pruning, IID, late move pruning, futility pruning, poda SEE
-- Contempt dinâmico: escala de 20–200 cp baseado na vantagem de avaliação
-- TimeManagement estilo Stockfish: tempo ótimo/máximo, ajuste de estabilidade, detecção de lance óbvio
-- TT configurável: dimensionamento dinâmico Hash (1–4096 MB), alinhada ao cache, prefetch, reporte hashfull
-- Infraestrutura de bitboard: BETWEEN_BB, LINE_BB, RAY_BB para detecção de cravadas e evasão de xeque
-- Tabela hash de peões: cacheia avaliação de estrutura de peões por eficiência
-- Avaliação preguiçosa: pula avaliação detalhada quando vantagem material é decisiva (fora de finais)
-- Comando perft para testes de correção
+A busca ganhou diversas técnicas avançadas: **Singular Extensions** detectam quando o lance da TT é o único bom lance e estendem sua busca (com extensões duplas e MultiCut), **ProbCut** poda posições onde uma busca rasa de capturas confirma grande excesso sobre beta, e **Verificação de Poda de Lance Nulo** em profundidades altas previne erros de zugzwang. A tabela de transposição foi **completamente redesenhada** com entradas de 10 bytes (antes 16), 3 entradas por cluster de 32 bytes alinhado ao cache, rastreamento de nó PV, e armazenamento de avaliação estática que evita chamadas a evaluate() nos acertos da TT. **Suporte a Ponder** foi adicionado para análise contínua durante o turno do oponente. A avaliação foi aprimorada com **PSQT incremental** (tabelas de peça-casa atualizadas em makeMove/undoMove), modelo de **segurança do rei quadrático não-linear** onde atacantes coordenados são exponencialmente mais perigosos, e **avaliação de mate em finais** (KQ vs K, KR vs K) que guia o lado vencedor ao xeque-mate.
+
+Principais destaques da v2.0:
+- Multi-threading Lazy SMP: opção UCI `Threads` (1–256), tabelas por thread, seleção por votação
+- Suporte a Ponder: análise contínua durante turno do oponente
+- Singular Extensions: detecção de lance único, extensões duplas, poda MultiCut
+- ProbCut: verificação rasa de capturas para podar posições muito acima de beta
+- Verificação de Poda de Lance Nulo: re-busca em profundidades altas para prevenir zugzwang
+- TT redesenhada: entradas de 10 bytes, 3 por cluster (32 bytes alinhado), flag PV, eval estática
+- Avaliação PSQT incremental: tabelas peça-casa atualizadas em makeMove/undoMove
+- Segurança do rei não-linear: escala quadrática de perigo com sinergia de atacantes
+- Avaliação de mate em finais: KQ vs K, KR vs K com guia rei-ao-canto
+- Heurística de histórico com fórmula de gravidade e malus de histórico
+- IIR (Internal Iterative Reduction) substituindo IID, com consciência de nó-corte
+- LMR aprimorado: ajustes por histórico, nó-corte, singular e captura TT
 
 ### Como Compilar
 
@@ -242,12 +252,12 @@ make info                           # mostra configuração atual de build
 Usando o **Prompt de Comando de Ferramentas Nativas x64 do VS 2022**:
 
 ```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp /Fe:deepbecky-v1.2-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT /arch:AVX2 main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp thread.cpp /Fe:deepbecky-v2.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
 ```
 
 **Sem AVX2 (compatibilidade mais ampla):**
 ```bash
-cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp /Fe:deepbecky-v1.2-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
+cl /nologo /EHsc /O2 /std:c++17 /DNDEBUG /MT main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp thread.cpp /Fe:deepbecky-v2.0-windows-x64.exe /link /LTCG /OPT:REF /OPT:ICF
 ```
 
 **Requisitos:** Visual Studio 2022 com ferramentas C++
@@ -270,12 +280,12 @@ make pgo PROFILE=native
 
 **Compilação manual (sem Makefile):**
 ```bash
-g++ -O3 -std=c++17 -march=native -DNDEBUG -flto main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp -o deepbecky
+g++ -O3 -std=c++17 -march=native -DNDEBUG -flto main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp thread.cpp -o deepbecky -lpthread
 ```
 
 **Linkagem estática (binário totalmente portátil):**
 ```bash
-g++ -O3 -std=c++17 -march=native -DNDEBUG -flto -static -static-libgcc -static-libstdc++ main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp -o deepbecky
+g++ -O3 -std=c++17 -march=native -DNDEBUG -flto -static -static-libgcc -static-libstdc++ main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp evaluate.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp thread.cpp -o deepbecky -lpthread
 ```
 
 ---

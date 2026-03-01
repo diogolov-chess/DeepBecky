@@ -1,6 +1,6 @@
 /*
- * This file is part of Deep Becky 1.2 - A UCI Chess Engine written by AI
- * Copyright (C) 2025-2026 Diogo de Oliveira Almeida.
+ * This file is part of Deep Becky 2.0 - A UCI Chess Engine written by AI
+ * Copyright © 2025-2026 Diogo de O. Almeida.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  */
 
-// types.h - Fundamental types and constants
+// Fundamental Types and Constants
 #ifndef DEEPBECKY_TYPES_H
 #define DEEPBECKY_TYPES_H
 
@@ -22,10 +22,10 @@
 #include <string>
 #include <limits>
 
-// ========================= Basic types =========================
+// ========================= Basic Types =========================
 using U64 = uint64_t;
 
-// ========================= Global constants =========================
+// ========================= Global Constants =========================
 constexpr int INF_SCORE   = 30000;
 constexpr int MATE_SCORE  = 29000;
 constexpr int MATE_IN_MAX = 28000;
@@ -48,7 +48,7 @@ enum Color { WHITE = 0, BLACK = 1, COLOR_NB = 2 };
 
 inline constexpr Color operator~(Color c) { return Color(c ^ 1); }
 
-// ========================= Piece functions =========================
+// ========================= Piece Functions =========================
 inline bool isWhitePiece(int p) { return p >= WPAWN && p <= WKING; }
 inline bool isBlackPiece(int p) { return p >= BPAWN && p <= BKING; }
 inline int  pieceColor(int p) { 
@@ -79,7 +79,7 @@ inline int sq_x(int s) { return s & 7; }  // Alias
 inline int sq_y(int s) { return s >> 3; }  // Alias
 inline bool isLightSquare(int s) { return ((sq_file(s) + sq_rank(s)) & 1) == 0; }
 inline bool onBoard(int x, int y) { return x >= 0 && x < 8 && y >= 0 && y < 8; }
-inline int flipRank(int s) { return s ^ 56; }  // Flip vertically
+inline int flipRank(int s) { return s ^ 56; }  // Vertical mirror
 
 // ========================= Moves =========================
 struct Move {
@@ -131,7 +131,7 @@ inline Move makeMovePacked(uint16_t data, uint8_t flags) {
     return m;
 }
 
-// ========================= Piece values =========================
+// ========================= Piece Values =========================
 constexpr int PIECE_VALUE[PIECE_NB] = {
     0, 100, 320, 330, 500, 900, 20000, 100, 320, 330, 500, 900, 20000
 };
