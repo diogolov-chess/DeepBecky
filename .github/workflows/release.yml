@@ -38,13 +38,14 @@ jobs:
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-make
+            make
 
       - name: Compile Deep Becky Engine
         shell: msys2 {0}
         run: |
           cd src
-          make clean
-          make -j2 ${{ matrix.flags }}
+          mingw32-make clean || make clean || true
+          mingw32-make -j2 ${{ matrix.flags }} || make -j2 ${{ matrix.flags }}
 
       - name: Package Release Assets
         shell: pwsh
