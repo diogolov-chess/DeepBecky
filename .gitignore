@@ -1,0 +1,86 @@
+# ============================================================================
+# Deep Becky — Git Ignore Rules
+# ============================================================================
+
+# --- Pastas Locais / Ferramentas / Backups ---
+backup/
+cutechess/
+arquivados/
+engines/
+relatórios/
+testes_partidas/
+training/
+
+# --- Documentos Internos de Arquitetura e IA ---
+AGENTS.md
+ARCHITECTURE.md
+CHANGELOG_AI.md
+NNUE_PLAN.md
+NNUE_RESEARCH.md
+ROLES.md
+
+# --- Datasets de Treinamento Gigantes ---
+*.jsonl
+*.parquet
+*.epd
+*.pgn
+dataset*/
+datasets/
+raw_downloads/
+training/raw_downloads/
+training/*.jsonl
+training/*.parquet
+
+# --- Checkpoints e Modelos PyTorch Pesados ---
+*.pt
+*.pth
+*.ckpt
+checkpoints*/
+checkpoints_*/
+training/checkpoints*/
+training/checkpoints_*/
+
+# --- Binarios, Bibliotecas e Executaveis ---
+*.exe
+*.dll
+*.so
+*.dylib
+*.bin
+
+# --- Arquivos de Build, Objetos e Compilacao C++ ---
+build/
+src/build/
+*.o
+*.obj
+*.a
+*.lib
+*.pdb
+*.ilk
+
+# --- PGO (Profile-Guided Optimization) e Profilers ---
+pgo-data/
+src/pgo-data/
+*.profdata
+*.profraw
+*.gcda
+*.gcno
+
+# --- Python Cache e Ambientes Virtuais ---
+__pycache__/
+*.py[cod]
+*$py.class
+.cache/
+.pytest_cache/
+venv/
+.venv/
+env/
+
+# --- Arquivos Temporarios do Sistema e IDEs ---
+.vscode/
+.idea/
+*.tmp
+*.log
+*.bak
+Thumbs.db
+Desktop.ini
+.DS_Store
