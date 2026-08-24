@@ -3,6 +3,8 @@ name: Build and Release Deep Becky
 on:
   release:
     types: [published]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -30,33 +32,34 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup MinGW-w64
+      - name: Setup MSYS2 MinGW-w64
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          update: true
+          update: false
           install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-make
             make
+            mingw-w64-x86_64-gcc
 
       - name: Compile Deep Becky Engine
         shell: msys2 {0}
         run: |
           cd src
-          mingw32-make clean || make clean || true
-          mingw32-make -j2 ${{ matrix.flags }} || make -j2 ${{ matrix.flags }}
+          make clean
+          make -j2 ${{ matrix.flags }}
 
       - name: Package Release Assets
         shell: pwsh
         run: |
           $pkgDir = "DeepBecky-3.0-${{ matrix.suffix }}"
-          New-Item -ItemType Directory -Path $pkgDir
+          if (Test-Path $pkgDir) { Remove-Item -Recurse -Force $pkgDir }
+          New-Item -ItemType Directory -Path $pkgDir -Force
           Copy-Item "src/DeepBecky_3.0.exe" -Destination "$pkgDir/DeepBecky_3.0.exe"
           Copy-Item "src/db-leela500m-v5.nnue" -Destination "$pkgDir/db-leela500m-v5.nnue"
           Copy-Item "README.md" -Destination "$pkgDir/README.md"
           Copy-Item "LICENSE" -Destination "$pkgDir/LICENSE"
-          Compress-Archive -Path "$pkgDir/*" -DestinationPath "$pkgDir.zip"
+          if (Test-Path "$pkgDir.zip") { Remove-Item -Force "$pkgDir.zip" }
+          Compress-Archive -Path "$pkgDir/*" -DestinationPath "$pkgDir.zip" -Force
 
       - name: Upload Release Asset
         if: github.event_name == 'release'
@@ -64,7 +67,7 @@ jobs:
         with:
           files: DeepBecky-3.0-${{ matrix.suffix }}.zip
 
-      - name: Upload Artifact (Workflow Dispatch)
+      - name: Upload Artifact (CI Test)
         if: github.event_name != 'release'
         uses: actions/upload-artifact@v4
         with:
@@ -103,6 +106,7 @@ jobs:
       - name: Package Release Assets
         run: |
           PKG_DIR="DeepBecky-3.0-${{ matrix.suffix }}"
+          rm -rf "$PKG_DIR" "$PKG_DIR.tar.gz"
           mkdir -p "$PKG_DIR"
           cp src/DeepBecky_3.0 "$PKG_DIR/DeepBecky_3.0"
           cp src/db-leela500m-v5.nnue "$PKG_DIR/db-leela500m-v5.nnue"
@@ -116,7 +120,7 @@ jobs:
         with:
           files: DeepBecky-3.0-${{ matrix.suffix }}.tar.gz
 
-      - name: Upload Artifact (Workflow Dispatch)
+      - name: Upload Artifact (CI Test)
         if: github.event_name != 'release'
         uses: actions/upload-artifact@v4
         with:
