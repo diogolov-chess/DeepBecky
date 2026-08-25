@@ -8,6 +8,7 @@ class Position;
 namespace Eval {
 void init();
 int evaluate(Position& pos);
+int evaluateKXK(const Position& pos);
 
 } // namespace Eval
 
