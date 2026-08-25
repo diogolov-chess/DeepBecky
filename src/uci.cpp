@@ -25,11 +25,15 @@ std::string toLower(const std::string &str) {
   return result;
 }
 
+#ifndef ENGINE_VERSION
+#define ENGINE_VERSION "Deep Becky 3.0"
+#endif
+
 // ============================================================================
 // UCI Protocol Handlers
 // ============================================================================
 void cmdUci() {
-  std::cout << "id name Deep Becky 3.0" << std::endl;
+  std::cout << "id name " << ENGINE_VERSION << std::endl;
   std::cout << "id author Diogo de Oliveira Almeida" << std::endl;
   std::cout << "option name Hash type spin default 256 min 1 max 4096"
             << std::endl;

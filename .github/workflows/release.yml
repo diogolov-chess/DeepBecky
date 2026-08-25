@@ -62,13 +62,14 @@ jobs:
           Compress-Archive -Path "$pkgDir/*" -DestinationPath "$pkgDir.zip" -Force
 
       - name: Upload Release Asset
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: "v3.0"
           files: DeepBecky-3.0-${{ matrix.suffix }}.zip
 
       - name: Upload Artifact (CI Test)
-        if: github.event_name != 'release'
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: DeepBecky-3.0-${{ matrix.suffix }}
@@ -115,13 +116,14 @@ jobs:
           tar -czvf "$PKG_DIR.tar.gz" -C "$PKG_DIR" .
 
       - name: Upload Release Asset
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: "v3.0"
           files: DeepBecky-3.0-${{ matrix.suffix }}.tar.gz
 
       - name: Upload Artifact (CI Test)
-        if: github.event_name != 'release'
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: DeepBecky-3.0-${{ matrix.suffix }}

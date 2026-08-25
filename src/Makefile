@@ -156,8 +156,21 @@ ifeq ($(PROFILE),native)
   endif
 endif
 
+# Version Detection (auto-generates "Deep Becky dev-YYYYMMDD" or official tag)
+GIT_DATE := $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null)
+ifeq ($(strip $(GIT_DATE)),)
+  GIT_DATE := 20260824
+endif
+
+GIT_TAG := $(shell git describe --tags --exact-match 2>/dev/null)
+ifdef GIT_TAG
+  ENGINE_VERSION_STR := Deep Becky $(subst v,,$(GIT_TAG))
+else
+  ENGINE_VERSION_STR := Deep Becky dev-$(GIT_DATE)
+endif
+
 # Combine Flags
-CXXFLAGS_BASE := $(CXXSTD) $(OPT_BASE) $(LTO_FLAG) $(WARN) $(ARCHFLAGS) -faligned-new -I.
+CXXFLAGS_BASE := $(CXXSTD) $(OPT_BASE) $(LTO_FLAG) $(WARN) $(ARCHFLAGS) -faligned-new -I. -DENGINE_VERSION="\"$(ENGINE_VERSION_STR)\""
 LDFLAGS_BASE  := $(STRIPFLAG) $(LTO_FLAG) $(LDFLAGS_EXTRA)
 
 ifeq ($(STATIC),1)
