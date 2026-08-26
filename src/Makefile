@@ -157,12 +157,12 @@ ifeq ($(PROFILE),native)
 endif
 
 # Version Detection (auto-generates "Deep Becky dev-YYYYMMDD" or official tag)
-GIT_DATE := $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null)
+GIT_DATE := $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>$(DEV_NULL))
 ifeq ($(strip $(GIT_DATE)),)
   GIT_DATE := 20260824
 endif
 
-GIT_TAG := $(shell git describe --tags --exact-match 2>/dev/null)
+GIT_TAG := $(shell git describe --tags --exact-match 2>$(DEV_NULL))
 ifdef GIT_TAG
   ENGINE_VERSION_STR := Deep Becky $(subst v,,$(GIT_TAG))
 else
