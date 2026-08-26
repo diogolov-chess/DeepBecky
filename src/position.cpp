@@ -1058,6 +1058,15 @@ bool Position::hasNonPawnMaterial(bool white) const {
     }
 }
 
+// ========================= Is Zugzwang Endgame =========================
+bool Position::isZugzwangEndgame() const {
+    // True if neither side has heavy pieces (Queens or Rooks) and total minor pieces <= 2
+    const U64 heavy = bitboards[WQUEEN] | bitboards[BQUEEN] | bitboards[WROOK] | bitboards[BROOK];
+    if (heavy) return false;
+    const U64 minors = bitboards[WBISHOP] | bitboards[BBISHOP] | bitboards[WKNIGHT] | bitboards[BKNIGHT];
+    return popcount(minors) <= 2;
+}
+
 // ========================= Calculate Threats (Bitboard Hardware) =========================
 void Position::calcThreats(Threats& threats) const {
     const Color them = ~sideToMove();

@@ -181,6 +181,7 @@ struct Threats {
     int see(const Move& m) const;
     bool SEE(const Move& m, int threshold) const;
     bool hasNonPawnMaterial(bool white) const;
+    bool isZugzwangEndgame() const;
 
     // Principal Variation at Root
     std::vector<Move> rootPV;

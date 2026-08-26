@@ -124,13 +124,26 @@ void MovePicker::scoreQuiets() {
             U64 toBB = square_bb(to_sq);
             int pt = isWhitePiece(movedPiece) ? movedPiece : (movedPiece - 6);
 
-            // Threat-Aware Move Ordering (Obsidian/Reckless style)
+            // Threat-Aware Move Ordering (Normalized & Saturated)
             if (pt != 1) { // not pawn
-                if (threats.byRook & fromBB) score += 32768;
-                if (threats.byMinor & fromBB) score += 16384;
-                if (threats.byPawn & fromBB) score += 16384;
-                if (threats.byPawn & toBB) score -= 32768;
-                if ((threats.byMinor & toBB) && pt > 3) score -= 16384;
+                int threatBonus = 0;
+                if (threats.byPawn & fromBB) {
+                    threatBonus = 16384; // Highest priority: piece attacked by pawn
+                } else if (threats.byMinor & fromBB) {
+                    threatBonus = (pt > 3) ? 12288 : 8192; // Queen/Rook escaping minor piece
+                } else if (threats.byRook & fromBB) {
+                    if (pt > 4) threatBonus = 8192; // Queen escaping Rook
+                }
+
+                // Penalize moving piece to a square attacked by pawn or minor
+                if (threats.byPawn & toBB) {
+                    threatBonus -= 16384;
+                } else if ((threats.byMinor & toBB) && pt > 3) {
+                    threatBonus -= 8192;
+                }
+
+                // Saturated clamp on threat delta to protect history/killer balance
+                score += std::clamp(threatBonus, -16384, 16384);
             }
 
             // Pawn history

@@ -235,6 +235,12 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
     int nonPawnCor = thread->nonPawnCorHist[white_to_move ? WHITE : BLACK][nonPawnHash];
     stand += (corHist + nonPawnCor) / Search::Tune::CorHistDivisor;
   }
+
+  // 50-Move Rule Damping: smoothly scale down static evaluation as halfmove approaches 100
+  if (halfmove >= 70 && !isInCheck && std::abs(stand) < MATE_IN_MAX) {
+    stand = (stand * (100 - halfmove)) / 30;
+  }
+
   int best = stand;
 
   if (!isInCheck) {
@@ -469,6 +475,12 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     eval = staticEval;
   }
 
+  // 50-Move Rule Damping: smoothly scale down static evaluation as halfmove approaches 100
+  if (halfmove >= 70 && !isInCheck && std::abs(eval) < MATE_IN_MAX) {
+    eval = (eval * (100 - halfmove)) / 30;
+    staticEval = eval;
+  }
+
   // Store static eval in search stack for improving detection
   ss->staticEval = staticEval;
 
@@ -506,7 +518,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
   if (!pvNode && !isInCheck && depth >= Search::Tune::NmpDepthLimit &&
       ply > 0 &&
       staticEval >= beta &&
-      hasNonPawnMaterial(white_to_move) && moveIsNone(excludedMove) &&
+      hasNonPawnMaterial(white_to_move) && !isZugzwangEndgame() && moveIsNone(excludedMove) &&
       !moveIsNone((ss - 1)->currentMove) &&
       (ply >= thread->nmpMinPly || sideToMove() != thread->nmpColor)) {
     ss->currentMove = MOVE_NONE; // No real move — prevents stale counter-move
@@ -660,9 +672,9 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
         singularLMR = true;
 
         // Double & Triple Singular Extensions: ONLY on non-PV nodes to avoid root explosion (~25 Elo)
-        if (!pvNode && seScore < singularBeta - Search::Tune::DoubleExtMargin) {
+        if (!pvNode && ss->doubleExtensions < 2 && seScore < singularBeta - Search::Tune::DoubleExtMargin) {
           extension = 2;
-          if (!isCapture && seScore < singularBeta - Search::Tune::TripleExtMargin) {
+          if (depth >= 10 && !isCapture && ss->doubleExtensions == 0 && seScore < singularBeta - Search::Tune::TripleExtMargin) {
             extension = 3;
           }
         }
@@ -733,7 +745,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
       newDepth = 0;
 
     // Pass down double extensions count
-    (ss + 1)->doubleExtensions = ss->doubleExtensions + (extension > 0 ? 1 : 0);
+    (ss + 1)->doubleExtensions = ss->doubleExtensions + (extension >= 2 ? 1 : 0);
 
     // ============ Pruning at low depths (HUGE speedup ~200 Elo) ============
     if (!rootNode && best > -MATE_IN_MAX) {
