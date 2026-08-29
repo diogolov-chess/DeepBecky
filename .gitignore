@@ -84,3 +84,5 @@ env/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# --- Fim das regras de ignore ---
