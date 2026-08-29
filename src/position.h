@@ -89,7 +89,6 @@ public:
     SearchThread* thread = nullptr;
 
     // Search State
-    bool rootSideIsWhite = true;
     std::atomic<int64_t> nodes{0};
     int selDepth = 0;
     bool stopSearching = false;
@@ -105,13 +104,8 @@ public:
     int rootMoveAvgScore[MAX_MOVES]{};           // Running average score per root move
     int rootMoveCount = 0;                       // Number of root moves
     
-    // Evaluation and Accumulator Stacks
-    int evalStack[MAX_PLY]{};
+    // NNUE Accumulator Stack
     std::vector<NNUE::AccumulatorState> nnueStack;
-
-    // Book/History
-    std::vector<std::string> uci_history;
-    std::unordered_map<std::string, std::vector<std::string>> opening_book;
 
     // Undo Stack for Make/Unmake
     struct Undo {
@@ -145,7 +139,6 @@ public:
     // Move Generation
     int generateLegal(Move* moves, GenType type = GEN_ALL);
     int generateLegal(Move* moves, bool capturesOnly);
-    int generatePseudo(Move* moves, bool capturesOnly = false);
 
     // Attack Detection & Pins
     bool isAttacked(int s, bool byWhite) const;
@@ -178,7 +171,6 @@ struct Threats {
     // Evaluation & Threats
     int evaluate();
     void calcThreats(Threats& threats) const;
-    int see(const Move& m) const;
     bool SEE(const Move& m, int threshold) const;
     bool hasNonPawnMaterial(bool white) const;
     bool isZugzwangEndgame() const;
@@ -200,14 +192,9 @@ struct Threats {
 
     // Draw Detection
     bool isFiftyMoveDraw() const;
-    bool isThreefoldRepetition() const;
     bool isThreefoldRepetition(int ply) const;
     bool isInsufficientMaterial() const;
     bool isDraw(int ply);
-
-    // Opening Book
-    void initBook();
-    std::string bookKey() const;
 
     // Bitboard Query Helpers
     Color sideToMove() const { return white_to_move ? WHITE : BLACK; }

@@ -46,11 +46,8 @@ void cmdUci() {
   std::cout
       << "option name TrainingLogFile type string default deepbecky_train.jsonl"
       << std::endl;
-  std::cout << "option name UseSingular type check default true" << std::endl;
-  std::cout << "option name UseSEEPruning type check default true" << std::endl;
-  std::cout << "option name UseLMR type check default true" << std::endl;
-  std::cout << "option name UseHistory type check default true" << std::endl;
-  std::cout << "option name UseNMP type check default true" << std::endl;
+  std::cout << "option name LazySmpDebug type check default false" << std::endl;
+  std::cout << "option name LazySmpSelfTest type button" << std::endl;
 
   // Tuning parameters
   std::cout << "option name LmrBaseBase type spin default "
@@ -84,8 +81,6 @@ void cmdUci() {
   std::cout << "option name NmpEvalMarginBase type spin default "
             << Search::Tune::NmpEvalMarginBase << " min 0 max 800"
             << std::endl;
-  std::cout << "option name DrawRejectMargin type spin default "
-            << Search::Tune::DrawRejectMargin << " min 10 max 150" << std::endl;
   std::cout << "option name RfpDepthLimit type spin default "
             << Search::Tune::RfpDepthLimit << " min 5 max 25" << std::endl;
   std::cout << "option name NmpDepthLimit type spin default "
@@ -192,17 +187,15 @@ void cmdSetOption(Position &engine, std::istringstream &is) {
         optValue.empty() ? std::string("deepbecky_train.jsonl") : optValue);
     std::cout << "info string training log file set to "
               << NNUE::trainingLogFile() << std::endl;
-  } else if (optNameLower == "usesingular")
-    Search::UseSingular = (toLower(optValue) == "true");
-  else if (optNameLower == "useseepruning")
-    Search::UseSEEPruning = (toLower(optValue) == "true");
-  else if (optNameLower == "uselmr")
-    Search::UseLMR = (toLower(optValue) == "true");
-  else if (optNameLower == "usehistory")
-    Search::UseHistory = (toLower(optValue) == "true");
-  else if (optNameLower == "usenmp")
-    Search::UseNMP = (toLower(optValue) == "true");
-  else if (optNameLower == "lmrbasebase")
+  } else if (optNameLower == "lazysmpdebug") {
+    Threads.lazySmpDebug = (toLower(optValue) == "true");
+    std::cout << "info string Lazy SMP diagnostics "
+              << (Threads.lazySmpDebug ? "enabled" : "disabled") << std::endl;
+  } else if (optNameLower == "lazysmpselftest") {
+    const bool passed = Threads.runLazySmpSelectionTests();
+    std::cout << "info string Lazy SMP selection self-test "
+              << (passed ? "passed" : "FAILED") << std::endl;
+  } else if (optNameLower == "lmrbasebase")
     Search::Tune::LmrBaseBase = std::stoi(optValue);
   else if (optNameLower == "lmrmultbase")
     Search::Tune::LmrMultBase = std::stoi(optValue);
@@ -226,8 +219,6 @@ void cmdSetOption(Position &engine, std::istringstream &is) {
     Search::Tune::NmpEvalMarginDepth = std::stoi(optValue);
   else if (optNameLower == "nmpevalmarginbase")
     Search::Tune::NmpEvalMarginBase = std::stoi(optValue);
-  else if (optNameLower == "drawrejectmargin")
-    Search::Tune::DrawRejectMargin = std::stoi(optValue);
   else if (optNameLower == "rfpdepthlimit")
     Search::Tune::RfpDepthLimit = std::stoi(optValue);
   else if (optNameLower == "nmpdepthlimit")

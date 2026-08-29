@@ -2,17 +2,17 @@
 
 ---
 
-# Deep Becky 3.0 (The NNUE Revolution)
+# Deep Becky 3.0 (In Development / Towards Release 3.0)
 
 ---
 
 # 🇬🇧 English Version
 
-## Improvements over version 2.0
+## Improvements under development (Towards version 3.0)
 
 ### 🧠 NNUE Neural Network Evaluation (MAJOR ARCHITECTURAL LEAP)
 
-Deep Becky 3.0 officially inaugurates the **NNUE (Efficiently Updatable Neural Network)** era, replacing the legacy Handcrafted Evaluation (HCE) with a state-of-the-art deep learning architecture:
+The development towards Deep Becky 3.0 officially introduces the **NNUE (Efficiently Updatable Neural Network)** architecture, replacing the legacy Handcrafted Evaluation (HCE) with a deep learning evaluation engine:
 
 | Component | Specification | Description |
 |-----------|---------------|-------------|
@@ -84,11 +84,11 @@ New dedicated module (`threats.h` / `threats.cpp`) implementing fast bitboard-le
 
 # 🇧🇷 Versão em Português
 
-## Melhorias em relação à versão 2.0
+## Melhorias em desenvolvimento (Rumo à versão 3.0)
 
 ### 🧠 Avaliação por Rede Neural NNUE (GRANDE SALTO ARQUITETURAL)
 
-A Deep Becky 3.0 inaugura oficialmente a era da **Rede Neural Profunda NNUE (Efficiently Updatable Neural Network)**, substituindo a antiga avaliação artesanal (HCE) por uma arquitetura de aprendizado profundo de ponta:
+O desenvolvimento rumo à Deep Becky 3.0 introduz oficialmente a era da **Rede Neural Profunda NNUE (Efficiently Updatable Neural Network)**, substituindo a antiga avaliação artesanal (HCE) por uma arquitetura de aprendizado profundo de ponta:
 
 | Componente | Especificação | Descrição |
 |------------|---------------|-----------|

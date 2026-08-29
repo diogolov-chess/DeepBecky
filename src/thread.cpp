@@ -16,6 +16,274 @@
 
 ThreadPool Threads;
 
+namespace {
+
+constexpr size_t MIN_QUALIFIED_PV_LENGTH = 3;
+constexpr int MIN_NORMAL_MOVE_SUPPORT = 2;
+
+struct SelectionCandidate {
+    size_t threadId = 0;
+    Move bestMove = MOVE_NONE;
+    int bestScore = -INF_SCORE;
+    int completedDepth = 0;
+    size_t pvLength = 0;
+    bool pvMatchesBestMove = false;
+    bool hasCompletedIteration = false;
+    bool legalMove = false;
+    bool eligible = false;
+};
+
+bool hasUsableResult(const SelectionCandidate& candidate) {
+    return candidate.hasCompletedIteration && candidate.completedDepth > 0 &&
+           !moveIsNone(candidate.bestMove) && candidate.legalMove &&
+           candidate.bestScore > -INF_SCORE && candidate.bestScore < INF_SCORE;
+}
+
+bool isWinningMate(const SelectionCandidate& candidate) {
+    return candidate.bestScore >= MATE_IN_MAX;
+}
+
+bool isLosingMate(const SelectionCandidate& candidate) {
+    return candidate.bestScore <= -MATE_IN_MAX;
+}
+
+bool isNormalScore(const SelectionCandidate& candidate) {
+    return !isWinningMate(candidate) && !isLosingMate(candidate);
+}
+
+size_t selectBestCandidate(std::vector<SelectionCandidate>& candidates) {
+    if (candidates.empty())
+        return 0;
+
+    SelectionCandidate& main = candidates.front();
+    const bool mainUsable = hasUsableResult(main);
+
+    // Thread 0 is the anchor. Helpers are considered only when they have a
+    // complete, legal result, a non-truncated PV, and at least the depth of
+    // the main thread. The comparison is intentionally against Thread 0,
+    // never against a global maximum reached by a helper.
+    main.eligible = mainUsable;
+    for (size_t i = 1; i < candidates.size(); ++i) {
+        SelectionCandidate& candidate = candidates[i];
+        candidate.eligible = hasUsableResult(candidate) && mainUsable &&
+                             candidate.completedDepth >= main.completedDepth &&
+                             candidate.pvLength >= MIN_QUALIFIED_PV_LENGTH &&
+                             candidate.pvMatchesBestMove;
+    }
+
+    // A completed mate score has priority over normal voting. Among winning
+    // mates, the larger score is the shorter mate.
+    size_t bestWinningMate = candidates.size();
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        const SelectionCandidate& candidate = candidates[i];
+        if (!candidate.eligible || !isWinningMate(candidate))
+            continue;
+        if (bestWinningMate == candidates.size() ||
+            candidate.bestScore > candidates[bestWinningMate].bestScore ||
+            (candidate.bestScore == candidates[bestWinningMate].bestScore &&
+             candidate.threadId < candidates[bestWinningMate].threadId)) {
+            bestWinningMate = i;
+        }
+    }
+    if (bestWinningMate != candidates.size())
+        return bestWinningMate;
+
+    // Only normal scores take part in the vote. A proven loss must never
+    // defeat a normal root result merely because its numeric weight is large.
+    std::map<uint32_t, int64_t> votes;
+    std::map<uint32_t, int> support;
+    int minScore = INF_SCORE;
+    for (const SelectionCandidate& candidate : candidates) {
+        if (candidate.eligible && isNormalScore(candidate))
+            minScore = std::min(minScore, candidate.bestScore);
+    }
+    if (minScore != INF_SCORE) {
+        for (const SelectionCandidate& candidate : candidates) {
+            if (!candidate.eligible || !isNormalScore(candidate))
+                continue;
+
+            const uint32_t moveKey = candidate.bestMove.data;
+            const int64_t weight =
+                static_cast<int64_t>(candidate.bestScore - minScore + 14) *
+                candidate.completedDepth;
+            votes[moveKey] += weight;
+            support[moveKey] += 1;
+        }
+    }
+
+    // Normal helper moves require independent confirmation. This blocks a
+    // single fail-high, including one from an auxiliary that happened to
+    // complete a nominally deeper iteration than Thread 0.
+    size_t bestNormalHelper = candidates.size();
+    const uint32_t mainMoveKey = main.bestMove.data;
+    const int64_t mainVote = votes[mainMoveKey];
+    for (size_t i = 1; i < candidates.size(); ++i) {
+        const SelectionCandidate& candidate = candidates[i];
+        if (!candidate.eligible || !isNormalScore(candidate))
+            continue;
+
+        const uint32_t moveKey = candidate.bestMove.data;
+        if (moveKey == mainMoveKey ||
+            support[moveKey] < MIN_NORMAL_MOVE_SUPPORT ||
+            votes[moveKey] <= mainVote)
+            continue;
+
+        if (bestNormalHelper == candidates.size()) {
+            bestNormalHelper = i;
+            continue;
+        }
+
+        const SelectionCandidate& current = candidates[bestNormalHelper];
+        const uint32_t currentMoveKey = current.bestMove.data;
+        if (votes[moveKey] > votes[currentMoveKey] ||
+            (votes[moveKey] == votes[currentMoveKey] &&
+             candidate.completedDepth > current.completedDepth) ||
+            (votes[moveKey] == votes[currentMoveKey] &&
+             candidate.completedDepth == current.completedDepth &&
+             candidate.threadId < current.threadId)) {
+            bestNormalHelper = i;
+        }
+    }
+    if (bestNormalHelper != candidates.size())
+        return bestNormalHelper;
+
+    // If every usable result is a proven loss, prefer the larger score: it
+    // represents the longest defense. Otherwise preserve Thread 0's normal
+    // result as the anchor.
+    if (mainUsable && isLosingMate(main)) {
+        size_t bestLoss = 0;
+        for (size_t i = 1; i < candidates.size(); ++i) {
+            const SelectionCandidate& candidate = candidates[i];
+            if (candidate.eligible && isLosingMate(candidate) &&
+                candidate.bestScore > candidates[bestLoss].bestScore) {
+                bestLoss = i;
+            }
+        }
+        return bestLoss;
+    }
+
+    return 0;
+}
+
+SelectionCandidate makeSelectionTestCandidate(size_t id, uint16_t moveData,
+                                               int score, int depth,
+                                               size_t pvLength = 3,
+                                               bool completed = true,
+                                               bool legal = true,
+                                               bool pvMatchesBestMove = true) {
+    SelectionCandidate candidate;
+    candidate.threadId = id;
+    candidate.bestMove.data = moveData;
+    candidate.bestScore = score;
+    candidate.completedDepth = depth;
+    candidate.pvLength = pvLength;
+    candidate.pvMatchesBestMove = pvMatchesBestMove;
+    candidate.hasCompletedIteration = completed;
+    candidate.legalMove = legal;
+    return candidate;
+}
+
+bool runSelectionUnitTests() {
+    const auto select = [](std::vector<SelectionCandidate> candidates) {
+        const size_t selected = selectBestCandidate(candidates);
+        return candidates[selected].threadId;
+    };
+    const auto check = [](bool condition, int testNumber) {
+        if (!condition)
+            std::cout << "info string Lazy SMP self-test case " << testNumber
+                      << " failed" << std::endl;
+        return condition;
+    };
+
+    // Single-thread behavior and unusable helpers preserve Thread 0.
+    if (!check(select({makeSelectionTestCandidate(0, 1, 20, 18)}) == 0, 1))
+        return false;
+    if (!check(select({makeSelectionTestCandidate(0, 1, 20, 18),
+                       makeSelectionTestCandidate(1, 2, 1100, 30, 3, false)}) == 0,
+               2))
+        return false;
+
+    // A shallow or lone high-scoring helper cannot replace the anchor.
+    if (!check(select({makeSelectionTestCandidate(0, 1, -200, 18),
+                       makeSelectionTestCandidate(1, 2, 1100, 8)}) == 0,
+               3))
+        return false;
+    if (!check(select({makeSelectionTestCandidate(0, 1, -200, 18),
+                       makeSelectionTestCandidate(1, 2, 1100, 19)}) == 0,
+               4))
+        return false;
+
+    // Two qualified helpers independently supporting the same normal move
+    // may replace Thread 0 when their combined vote is stronger.
+    if (!check(select({makeSelectionTestCandidate(0, 1, -200, 18),
+                       makeSelectionTestCandidate(1, 2, 200, 18),
+                       makeSelectionTestCandidate(2, 2, 180, 19)}) == 2,
+               5))
+        return false;
+
+    // A truncated PV is not eligible, even at a compatible depth.
+    if (!check(select({makeSelectionTestCandidate(0, 1, -200, 18),
+                       makeSelectionTestCandidate(1, 2, 1100, 20, 2),
+                       makeSelectionTestCandidate(2, 2, 1000, 20, 2)}) == 0,
+               6))
+        return false;
+    if (!check(select({makeSelectionTestCandidate(0, 1, -200, 18),
+                       makeSelectionTestCandidate(1, 2, 1100, 20, 3, true, true, false),
+                       makeSelectionTestCandidate(2, 2, 1000, 20, 3, true, true, false)}) == 0,
+               7))
+        return false;
+
+    // Mates override normal voting; greater winning score is a shorter mate.
+    if (!check(select({makeSelectionTestCandidate(0, 1, 10, 18),
+                       makeSelectionTestCandidate(1, 2, MATE_IN_MAX + 10, 18),
+                       makeSelectionTestCandidate(2, 3, MATE_IN_MAX + 20, 18)}) == 2,
+               8))
+        return false;
+
+    // If all usable candidates are losing mates, choose the longest defense.
+    if (!check(select({makeSelectionTestCandidate(0, 1, -MATE_IN_MAX - 20, 18),
+                       makeSelectionTestCandidate(1, 2, -MATE_IN_MAX - 10, 18)}) == 1,
+               9))
+        return false;
+
+    // Sentinel and illegal results must never become voters.
+    if (!check(select({makeSelectionTestCandidate(0, 1, 10, 18),
+                       makeSelectionTestCandidate(1, 2, -INF_SCORE, 20),
+                       makeSelectionTestCandidate(2, 2, 1100, 20, 3, true, false)}) == 0,
+               10))
+        return false;
+
+    return true;
+}
+
+bool isLegalRootMove(Position& root, Move move) {
+    Move legalMoves[MAX_MOVES];
+    const int legalMoveCount = root.generateLegal(legalMoves);
+    for (int i = 0; i < legalMoveCount; ++i) {
+        if (legalMoves[i] == move)
+            return true;
+    }
+    return false;
+}
+
+void printLazySmpDiagnostics(const std::vector<SelectionCandidate>& candidates,
+                             size_t selected, const SearchThread& outputThread) {
+    for (const SelectionCandidate& candidate : candidates) {
+        std::cout << "info string lazy-smp thread=" << candidate.threadId
+                  << " completed=" << (candidate.hasCompletedIteration ? 1 : 0)
+                  << " eligible=" << (candidate.eligible ? 1 : 0)
+                  << " depth=" << candidate.completedDepth
+                  << " score=" << candidate.bestScore
+                  << " move=" << outputThread.pos.moveToUCI(candidate.bestMove)
+                  << " pv_length=" << candidate.pvLength
+                  << " pv_matches_move=" << (candidate.pvMatchesBestMove ? 1 : 0)
+                  << " selected=" << (candidate.threadId == selected ? 1 : 0)
+                  << std::endl;
+    }
+}
+
+} // namespace
+
 // ========================= SearchThread =========================
 
 SearchThread::SearchThread(size_t index) : idx(index) {
@@ -65,43 +333,30 @@ void SearchThread::idle_loop() {
             for (size_t i = 1; i < Threads.size(); i++)
                 Threads.at(i)->wait_for_search_finished();
 
-            // === VOTE-BASED BEST THREAD SELECTION ===
-            SearchThread* bestThread = this;
-
-            if (Threads.size() > 1) {
-                std::map<uint32_t, int64_t> votes;
-                int minScore = bestScore;
-
-                // Find minimum score across all threads
-                for (size_t i = 0; i < Threads.size(); i++) {
-                    auto* t = Threads.at(i);
-                    if (t->completedDepth > 0 && t->bestScore < minScore)
-                        minScore = t->bestScore;
-                }
-
-                // Vote: weight = (score - minScore + 14) * completedDepth
-                for (size_t i = 0; i < Threads.size(); i++) {
-                    auto* t = Threads.at(i);
-                    if (t->completedDepth <= 0 || moveIsNone(t->bestMove))
-                        continue;
-
-                    uint32_t moveKey = t->bestMove.data;
-                    int64_t weight = static_cast<int64_t>(t->bestScore - minScore + 14)
-                                   * t->completedDepth;
-                    votes[moveKey] += weight;
-
-                    uint32_t bestKey = bestThread->bestMove.data;
-
-                    // Prefer shortest mate
-                    if (bestThread->bestScore >= MATE_IN_MAX) {
-                        if (t->bestScore > bestThread->bestScore)
-                            bestThread = t;
-                    } else if (t->bestScore >= MATE_IN_MAX
-                            || votes[moveKey] > votes[bestKey]) {
-                        bestThread = t;
-                    }
-                }
+            // === DEPTH-QUALIFIED LAZY SMP SELECTION (POLICY C2) ===
+            std::vector<SelectionCandidate> candidates;
+            candidates.reserve(Threads.size());
+            for (size_t i = 0; i < Threads.size(); ++i) {
+                SearchThread* thread = Threads.at(i);
+                SelectionCandidate candidate;
+                candidate.threadId = thread->idx;
+                candidate.bestMove = thread->bestMove;
+                candidate.bestScore = thread->bestScore;
+                candidate.completedDepth = thread->completedDepth;
+                candidate.pvLength = thread->completedPV.size();
+                candidate.pvMatchesBestMove =
+                    !thread->completedPV.empty() &&
+                    thread->completedPV.front() == candidate.bestMove;
+                candidate.hasCompletedIteration = thread->hasCompletedIteration;
+                candidate.legalMove = isLegalRootMove(pos, candidate.bestMove);
+                candidates.push_back(candidate);
             }
+
+            const size_t selectedIndex = selectBestCandidate(candidates);
+            SearchThread* bestThread = Threads.at(selectedIndex);
+
+            if (Threads.lazySmpDebug)
+                printLazySmpDiagnostics(candidates, bestThread->idx, *bestThread);
 
             // Print bestmove (from main thread context)
             Move bm = bestThread->bestMove;
@@ -150,10 +405,9 @@ void SearchThread::idle_loop() {
                               << std::endl;
                 }
 
-                // Extract ponder move from PV (second move in the PV)
+                // Extract ponder move from the completed PV (second move).
                 Move ponderMove = MOVE_NONE;
-                // Get PV from TT to find ponder move
-                std::vector<Move> pvLine = bestThread->pos.rootPV;
+                const std::vector<Move>& pvLine = bestThread->completedPV;
                 if (pvLine.size() >= 2) {
                     ponderMove = pvLine[1];
                 }
@@ -201,6 +455,8 @@ void SearchThread::clear() {
     bestMove = MOVE_NONE;
     bestScore = -INF_SCORE;
     completedDepth = 0;
+    completedPV.clear();
+    hasCompletedIteration = false;
 }
 
 #ifdef __AVX2__
@@ -316,7 +572,6 @@ void ThreadPool::startThinking(Position& rootPos, int maxDepth, int timeMs, bool
     searchTimeMs = timeMs;
     stop.store(false, std::memory_order_relaxed);
     ponder.store(ponderMode, std::memory_order_relaxed);
-    increaseDepth.store(true, std::memory_order_relaxed);
 
     auto startTime = std::chrono::high_resolution_clock::now();
 
@@ -332,6 +587,8 @@ void ThreadPool::startThinking(Position& rootPos, int maxDepth, int timeMs, bool
         t->bestMove = MOVE_NONE;
         t->bestScore = -INF_SCORE;
         t->completedDepth = 0;
+        t->completedPV.clear();
+        t->hasCompletedIteration = false;
         t->bestMoveChanges.store(0, std::memory_order_relaxed);
     }
 
@@ -340,4 +597,8 @@ void ThreadPool::startThinking(Position& rootPos, int maxDepth, int timeMs, bool
     // Wake main thread — it will start helpers from its idle_loop
     main()->start_searching();
     // Returns immediately: search runs asynchronously
+}
+
+bool ThreadPool::runLazySmpSelectionTests() const {
+    return runSelectionUnitTests();
 }

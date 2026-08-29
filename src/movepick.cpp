@@ -242,7 +242,7 @@ Move MovePicker::next() {
                 m = selectBest(captures, captureScores, captureCount, captureIdx);
                 if (moveIsNone(m)) break;
                 // Defer SEE-losing captures to BAD_CAPTURES.
-                if (Search::UseSEEPruning && !pos.SEE(m, 0)) {
+                if (!pos.SEE(m, 0)) {
                     int sIdx = captureIdx - 1;          // position of m after selectBest
                     badCaptures[badCount] = m;
                     badScores[badCount++] = captureScores[sIdx];

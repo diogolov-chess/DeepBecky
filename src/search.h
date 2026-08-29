@@ -11,25 +11,15 @@ struct SearchStack {
   Move pv[MAX_PLY + 1];
   int pvLength;
   int staticEval;
-  int statScore;
   Move currentMove;
   Move excludedMove;
   int movedPiece; // Piece that executed ss->currentMove
-  int16_t (
-      *continuationHistory)[64]; // Pointer to history slice:
-                                 // contHistory[...][movedPiece] -> [piece][to]
   int ply;
   int doubleExtensions;
 };
 
 // Search options and tunable parameters
 namespace Search {
-
-extern bool UseSingular;
-extern bool UseSEEPruning;
-extern bool UseLMR;
-extern bool UseHistory;
-extern bool UseNMP;
 
 namespace Tune {
 // ==========================================
@@ -67,7 +57,6 @@ extern int FutilityChildMult;
 extern int HistoryPruningMargin;
 extern int NmpEvalMarginDepth;
 extern int NmpEvalMarginBase;
-extern int DrawRejectMargin;
 extern int RfpDepthLimit;
 extern int NmpDepthLimit;
 extern int IirDepthLimit;

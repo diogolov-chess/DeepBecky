@@ -124,6 +124,10 @@ void initRayTables() {
 }
 
 void initBitboards() {
+    static bool initialized = false;
+    if (initialized) return;
+    initialized = true;
+
     initAttackTables();
     initRayTables();
 }

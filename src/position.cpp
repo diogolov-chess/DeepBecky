@@ -57,9 +57,6 @@ inline void ensureCurrentNNUEState(Position& pos) {
 
 // ========================= Constructor =========================
 Position::Position() {
-    initBitboards();
-    Magic::init();
-    clearTT();
     repHistSize = 0;
     nnueStack.resize(MAX_STACK);
     plies_since_null = 0;
@@ -84,7 +81,6 @@ Position::Position(const Position& other) {
     repHistSize = other.repHistSize;
     plies_since_null = other.plies_since_null;
     thread = other.thread;
-    rootSideIsWhite = other.rootSideIsWhite;
     nodes.store(other.nodes.load(std::memory_order_relaxed), std::memory_order_relaxed);
     selDepth = other.selDepth;
     stopSearching = other.stopSearching;
@@ -96,10 +92,7 @@ Position::Position(const Position& other) {
     std::memcpy(rootMoveEffort, other.rootMoveEffort, sizeof(rootMoveEffort));
     std::memcpy(rootMoveAvgScore, other.rootMoveAvgScore, sizeof(rootMoveAvgScore));
     rootMoveCount = other.rootMoveCount;
-    std::memcpy(evalStack, other.evalStack, sizeof(evalStack));
     nnueStack = other.nnueStack;
-    uci_history = other.uci_history;
-    opening_book = other.opening_book;
     std::memcpy(undoStack, other.undoStack, sizeof(undoStack));
     undoTop = other.undoTop;
     rootPV = other.rootPV;
@@ -124,7 +117,6 @@ Position& Position::operator=(const Position& other) {
     repHistSize = other.repHistSize;
     plies_since_null = other.plies_since_null;
     thread = other.thread;
-    rootSideIsWhite = other.rootSideIsWhite;
     nodes.store(other.nodes.load(std::memory_order_relaxed), std::memory_order_relaxed);
     selDepth = other.selDepth;
     stopSearching = other.stopSearching;
@@ -136,10 +128,7 @@ Position& Position::operator=(const Position& other) {
     std::memcpy(rootMoveEffort, other.rootMoveEffort, sizeof(rootMoveEffort));
     std::memcpy(rootMoveAvgScore, other.rootMoveAvgScore, sizeof(rootMoveAvgScore));
     rootMoveCount = other.rootMoveCount;
-    std::memcpy(evalStack, other.evalStack, sizeof(evalStack));
     nnueStack = other.nnueStack;
-    uci_history = other.uci_history;
-    opening_book = other.opening_book;
     std::memcpy(undoStack, other.undoStack, sizeof(undoStack));
     undoTop = other.undoTop;
     rootPV = other.rootPV;
@@ -286,7 +275,6 @@ bool Position::setFEN(const std::string& fen) {
     fullmove = parseUnsigned(tokens[5], 1);
     if (fullmove < 1) fullmove = 1;
 
-    uci_history.clear();
     undoTop = 0;
     hash = computeHash();
 
@@ -708,149 +696,10 @@ Move Position::uciToMove(const std::string& s) {
     return m;
 }
 
-// Static Exchange Evaluation - returns the estimated material gain/loss
-// Uses alpha-beta style pruning with early exits
-int Position::see(const Move& m) const {
-    if (!moveIsCapture(m)) return 0;
-
-    const int from_sq = moveFrom(m);
-    const int to_sq = moveTo(m);
-    const int side = white_to_move ? WHITE : BLACK;
-
-    int movingPiece = piece_board[from_sq];
-    if (movingPiece == EMPTY) return 0;
-
-    int capturedPiece;
-    if (moveIsEnPassant(m)) {
-        capturedPiece = (side == WHITE) ? BPAWN : WPAWN;
-    } else {
-        capturedPiece = piece_board[to_sq];
-    }
-    if (capturedPiece == EMPTY) return 0;
-
-    int promoType = movePromotionType(m);
-    if (promoType) movingPiece = promoType;
-
-    // Initial swap value
-    int swap = PIECE_VALUE[capturedPiece];
-    
-    // If we promote, add promotion value minus pawn value
-    if (promoType) {
-        swap += PIECE_VALUE[promoType] - PIECE_VALUE[WPAWN];
-    }
-    
-    // If capturing with a piece worth more than what we're capturing,
-    // we need to check if opponent can recapture
-    
-    // Setup occupancy for X-ray attacks
-    U64 occ = pieces();
-    occ ^= (1ULL << from_sq);  // Remove our piece from origin
-    
-    if (moveIsEnPassant(m)) {
-        int ep_sq = to_sq + (side == WHITE ? -8 : 8);
-        occ ^= (1ULL << ep_sq);  // Remove en passant captured pawn
-    }
-    
-    // Get all attackers to the target square (using global bitboards, not copied)
-    U64 allAttackers = allAttackersTo(to_sq, occ, bitboards);
-    allAttackers &= occ;  // Only consider pieces still on board
-    
-    // Remove our piece from attackers (it's on to_sq now conceptually)
-    allAttackers &= ~(1ULL << from_sq);
-    
-    // Color bitboards for filtering
-    U64 whitePieces = color_bitboards[WHITE] & occ;
-    U64 blackPieces = color_bitboards[BLACK] & occ;
-    
-    int stm = side ^ 1;  // Opponent to move
-    int currentPieceValue = PIECE_VALUE[movingPiece];
-    
-    int gain[32];
-    int depth = 0;
-    gain[0] = swap;
-    
-    while (allAttackers) {
-        depth++;
-        gain[depth] = currentPieceValue - gain[depth - 1];
-        
-        // Stand pat pruning - if we're already winning enough, stop
-        if (std::max(-gain[depth - 1], gain[depth]) < 0) break;
-        
-        // Get this side's attackers
-        U64 stmPieces = (stm == WHITE) ? whitePieces : blackPieces;
-        U64 stmAttackers = allAttackers & stmPieces;
-        
-        if (!stmAttackers) break;
-        
-        // Find least valuable attacker
-        int attackerSq = -1;
-        int attackerPiece = EMPTY;
-        
-        // Check piece types in order of value
-        static const int pieceOrder[2][6] = {
-            {WPAWN, WKNIGHT, WBISHOP, WROOK, WQUEEN, WKING},
-            {BPAWN, BKNIGHT, BBISHOP, BROOK, BQUEEN, BKING}
-        };
-        
-        for (int i = 0; i < 6; i++) {
-            int pt = pieceOrder[stm][i];
-            U64 bb = bitboards[pt] & stmAttackers;
-            if (bb) {
-                attackerSq = lsb_index(bb);
-                attackerPiece = pt;
-                break;
-            }
-        }
-        
-        if (attackerSq == -1) break;
-        
-        currentPieceValue = PIECE_VALUE[attackerPiece];
-        
-        // Remove this attacker from occupancy
-        occ ^= (1ULL << attackerSq);
-        
-        // Update attacker bitboards for X-ray pieces
-        if (attackerPiece == WPAWN || attackerPiece == BPAWN ||
-            attackerPiece == WBISHOP || attackerPiece == BBISHOP ||
-            attackerPiece == WQUEEN || attackerPiece == BQUEEN) {
-            // Diagonal X-ray
-            U64 diag = bitboards[WBISHOP] | bitboards[WQUEEN] | bitboards[BBISHOP] | bitboards[BQUEEN];
-            allAttackers |= Magic::bishopAttacks(to_sq, occ) & diag;
-        }
-        if (attackerPiece == WROOK || attackerPiece == BROOK ||
-            attackerPiece == WQUEEN || attackerPiece == BQUEEN) {
-            // Straight X-ray
-            U64 straight = bitboards[WROOK] | bitboards[WQUEEN] | bitboards[BROOK] | bitboards[BQUEEN];
-            allAttackers |= Magic::rookAttacks(to_sq, occ) & straight;
-        }
-        
-        allAttackers &= occ;
-        
-        // Update color occupancy
-        if (stm == WHITE) whitePieces ^= (1ULL << attackerSq);
-        else blackPieces ^= (1ULL << attackerSq);
-        
-        stm ^= 1;
-        
-        if (depth >= 31) break;
-    }
-    
-    // Minimax back the gains
-    while (depth > 0) {
-        gain[depth - 1] = -std::max(-gain[depth - 1], gain[depth]);
-        depth--;
-    }
-    
-    return gain[0];
-}
-
 // ========================= Misc =========================
 void Position::clearTT() {
     TT.clear();
 }
-
-void Position::initBook() {}
-std::string Position::bookKey() const { return ""; }
 
 bool Position::timeUp() const {
     // Check global stop flag first (set by other threads or UCI stop)
@@ -875,11 +724,6 @@ void Position::clearHeuristics() {
 
 bool Position::isFiftyMoveDraw() const {
     return halfmove >= 100;
-}
-
-bool Position::isThreefoldRepetition() const {
-    if (repHistSize == 0) return false;
-    return repetitionHistory[repHistSize - 1].repetition < 0;
 }
 
 bool Position::isThreefoldRepetition(int ply) const {

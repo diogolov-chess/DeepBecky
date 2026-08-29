@@ -21,8 +21,6 @@ constexpr int MATE_IN_MAX = 28000;
 constexpr int MAX_PLY     = 64;
 constexpr int MAX_MOVES   = 256;
 constexpr int MAX_STACK   = 4096;
-constexpr int DRAW_REJECT_MARGIN = 50;      // Centipawn threshold to decline draw when ahead
-constexpr int DRAW_DECLINE_PENALTY = 10000; // Search penalty for unwanted draw
 
 // ============================================================================
 // Pieces & Colors

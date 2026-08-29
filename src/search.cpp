@@ -15,11 +15,6 @@
 #include <sstream>
 
 namespace Search {
-bool UseLMR = true;
-bool UseSingular = true;
-bool UseSEEPruning = true;
-bool UseNMP = true;
-bool UseHistory = true;
 
 namespace Tune {
 // ==========================================
@@ -91,7 +86,6 @@ int SeePruningQuietBase = -79;
 
 // Misc
 int IirDepthLimit = 5;
-int DrawRejectMargin = 55;
 } // namespace Tune
 
 inline int captureTypeIndex(int piece) {
@@ -101,19 +95,13 @@ inline int captureTypeIndex(int piece) {
 }
 
 // =============================================================================
+// Reductions and Initialization
 // =============================================================================
 int Reductions[64][64]; // [depth][moveNumber]
 
-// =============================================================================
-// Initialization Functions
-// Precomputes LMR (Late Move Reductions) tables to speed up search depth
-// calculations
-// =============================================================================
 void init() {
   for (int d = 1; d < 64; d++) {
     for (int m = 1; m < 64; m++) {
-      // More balanced LMR base reduction (adapted for NNUE to avoid missing
-      // deep tactics)
       Reductions[d][m] = int(Search::Tune::LmrBaseBase / 100.0 +
                              (Search::Tune::LmrMultBase / 100.0) * std::log(d) *
                                  std::log(m) / 2.0);
@@ -202,7 +190,7 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
   if (ttHit) {
     int ttScore = static_cast<int>(tte->value16);
     TTFlag ttFlag = tte->flag();
-    // Adjust mate scores from TT (was missing — caused search instability)
+    // Adjust mate scores from TT relative to current ply
     if (ttScore >= MATE_IN_MAX)
       ttScore -= ply;
     if (ttScore <= -MATE_IN_MAX)
@@ -410,7 +398,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     if (ttHit) {
       ttDepth = tte->depth();
       ttScore = static_cast<int>(tte->value16);
-      // Adjust mate scores from TT
+      // Adjust mate scores from TT relative to current ply
       if (ttScore >= MATE_IN_MAX)
         ttScore -= ply;
       if (ttScore <= -MATE_IN_MAX)
@@ -418,16 +406,14 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
       ttFlag = tte->flag();
       ttEval = tte->eval16;
 
-      // Track if TT move is a capture (for LMR)
+      // Track if TT move is a capture
       if (!moveIsNone(ttMove)) {
-        ttCapture = moveIsCapture(ttMove); // now uses the reconstructed flag
+        ttCapture = moveIsCapture(ttMove);
       }
 
-      // TT cutoffs - NOT at root, NOT in PV nodes, NOT during singular search
+      // TT cutoffs - not at root, PV nodes, or singular search
       if (!rootNode && !pvNode && !excludedMove.data && ttDepth >= depth &&
           halfmove < 90) {
-        // The TT uses a 16-bit key + cluster index.
-        // We have validated the move, so we can trust the score.
         if (ttFlag == TT_EXACT)
           return ttScore;
         if (ttFlag == TT_ALPHA && ttScore <= alpha)
@@ -439,8 +425,6 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
   }
 
   // ============ Static Evaluation ============
-  // Use TT eval when available to avoid calling evaluate() (Phase 2
-  // optimization)
   int staticEval;
   int eval;
   int16_t rawEval = EVAL_NONE; // unadjusted eval for TT storage
@@ -1232,8 +1216,6 @@ Move Position::search(int maxDepth, int timeMs) {
 
   // Dynamic contempt based on material evaluation
   // When we're winning, we should STRONGLY avoid draws/repetitions
-  rootSideIsWhite = white_to_move;
-
   // ==========================================================
   // EARLY EXIT FOR OBVIOUS MOVES (main thread only)
   // ==========================================================
@@ -1269,6 +1251,8 @@ Move Position::search(int maxDepth, int timeMs) {
         thread->bestMove = legalMoves[0];
         thread->bestScore = score;
         thread->completedDepth = 1;
+        thread->completedPV.assign(1, legalMoves[0]);
+        thread->hasCompletedIteration = true;
       }
       return legalMoves[0];
     }
@@ -1488,6 +1472,8 @@ Move Position::search(int maxDepth, int timeMs) {
       thread->bestMove = best;
       thread->bestScore = prevScore;
       thread->completedDepth = d;
+      thread->completedPV = rootPV;
+      thread->hasCompletedIteration = true;
     }
 
     // ================================================================
@@ -1575,11 +1561,6 @@ Move Position::search(int maxDepth, int timeMs) {
             break;
           }
         }
-
-        bool isPondering = Threads.ponder.load(std::memory_order_relaxed);
-        Threads.increaseDepth.store(
-            isPondering || static_cast<double>(elapsedTime) <= totalTime * 0.50,
-            std::memory_order_relaxed);
       }
 
       // Store iterValue for this iteration

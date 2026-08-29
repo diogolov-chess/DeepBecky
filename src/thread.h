@@ -67,6 +67,11 @@ struct alignas(64) SearchThread {
     Move bestMove = MOVE_NONE;
     int bestScore = -INF_SCORE;
     int completedDepth = 0;
+    // Snapshot published only after a fully completed root iteration.
+    // It prevents the final Lazy SMP selection from mixing a completed score
+    // with a PV from an iteration interrupted by stop/time.
+    std::vector<Move> completedPV;
+    bool hasCompletedIteration = false;
 
     std::atomic<uint64_t> bestMoveChanges{0};  // How many times best move changed this iteration
     double previousTimeReduction = 1.0;        // Persisted across moves (momentum)
@@ -98,7 +103,6 @@ class ThreadPool {
 
 public:
     std::atomic<bool> stop{false};
-    std::atomic<bool> increaseDepth{true};
 
     // Search parameters (set by cmdGo before waking main thread)
     int searchMaxDepth = 64;
@@ -107,6 +111,7 @@ public:
     // Ponder support
     std::atomic<bool> ponder{false};   // Currently in ponder mode (don't print bestmove)
     bool ponderEnabled = false;        // UCI option "Ponder" enabled
+    bool lazySmpDebug = false;         // UCI diagnostic; disabled in normal play
 
     ~ThreadPool();
 
@@ -121,6 +126,7 @@ public:
     SearchThread* at(size_t i) const { return threads_[i]; }
     size_t size() const { return threads_.size(); }
     uint64_t nodes_searched() const;
+    bool runLazySmpSelectionTests() const;
 };
 
 extern ThreadPool Threads;

@@ -131,6 +131,10 @@ static U64 bishopAttGivenOcc(int sq, U64 occ) {
 // Attack Table Initialization
 // ============================================================================
 void init() {
+    static bool initialized = false;
+    if (initialized) return;
+    initialized = true;
+
     // First pass: compute masks, shifts, and table offsets
     for (int sq = 0; sq < 64; sq++) {
         U64 rm = rookMaskFor(sq);
