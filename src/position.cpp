@@ -792,8 +792,16 @@ bool Position::SEE(const Move& m, int threshold) const {
     const int to_sq = moveTo(m);
     const int side = white_to_move ? WHITE : BLACK;
 
-    int movingPiece = piece_board[from_sq];
+    const int movingPiece = piece_board[from_sq];
     if (movingPiece == EMPTY) return false;
+
+    // A promotion changes the piece that occupies the destination square.
+    // SEE must use that piece both for the promotion gain and if it is
+    // subsequently recaptured.
+    const int promotionType = movePromotionType(m);
+    const int landingPiece = promotionType
+        ? makePiece(static_cast<Color>(side), promotionType)
+        : movingPiece;
 
     int capturedPiece;
     if (moveIsEnPassant(m)) {
@@ -803,12 +811,18 @@ bool Position::SEE(const Move& m, int threshold) const {
     }
     if (capturedPiece == EMPTY) return false;
 
-    // Quick early exit: if we capture more than we can lose + threshold, it's good
-    int swap = PIECE_VALUE[capturedPiece] - threshold;
+    // Include the material gained by replacing the pawn with the promoted
+    // piece. This applies only to capture-promotions because non-captures
+    // retain the current quiet-SEE contract above.
+    const int promotionGain = PIECE_VALUE[landingPiece] - PIECE_VALUE[movingPiece];
+
+    // Quick early exit: if the initial gain cannot reach the threshold, fail.
+    int swap = PIECE_VALUE[capturedPiece] + promotionGain - threshold;
     if (swap < 0) return false;  // Even capturing the piece doesn't meet threshold
     
-    // If we can lose our piece but still meet threshold, it's good
-    swap = PIECE_VALUE[movingPiece] - swap;
+    // If the piece on the destination can be recaptured and the remaining
+    // material still reaches the threshold, the capture is good.
+    swap = PIECE_VALUE[landingPiece] - swap;
     if (swap <= 0) return true;  // Even if we lose our piece, we still profit enough
     
     // Need full SEE calculation

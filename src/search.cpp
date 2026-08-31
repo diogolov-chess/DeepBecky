@@ -28,7 +28,7 @@ int FutilityMoveCountBase = 3;
 int FutilityChildBase = 80;
 int FutilityChildMult = 75;
 int FutilityDepthLimit = 7;
-int RfpDepthLimit = 14;
+int RfpDepthLimit = 8;
 int RazorMarginBase = 512;
 int RazorMarginMult = 244;
 
@@ -148,6 +148,7 @@ inline int drawScore(uint64_t nodes) {
 // =============================================================================
 int Position::qsearch(int alpha, int beta, SearchStack *ss) {
   int ply = ss->ply;
+  const int originalAlpha = alpha;
 
   // Safety limit MUST be checked before writing to ss+1 to avoid buffer
   // overflow
@@ -209,13 +210,21 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
     }
   }
 
-  // Use TT eval if available, otherwise compute evaluation
+  // Use TT eval if available, otherwise compute evaluation. Keep the raw
+  // value for TT storage; correction history and 50-move damping are local
+  // search adjustments and must not be persisted as the static evaluation.
   int stand;
+  int16_t rawEval = EVAL_NONE;
   if (ttHit && tte->eval16 != EVAL_NONE) {
-    stand = static_cast<int>(tte->eval16);
+    rawEval = tte->eval16;
+    stand = static_cast<int>(rawEval);
   } else {
     stand = evaluate();
+    if (!isInCheck)
+      rawEval = static_cast<int16_t>(std::clamp(stand, -32000, 32000));
   }
+  if (isInCheck)
+    rawEval = EVAL_NONE;
   if (stand != -INF_SCORE) {
     int pawnHash = pawnKey % 16384;
     int nonPawnHash = (hash ^ (pawnKey >> 16)) % 16384;
@@ -230,10 +239,32 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
   }
 
   int best = stand;
+  Move bestMove = MOVE_NONE;
+
+  // Qsearch entries use logical depth zero (represented internally as depth
+  // one by TTEntry::save()). Never let such an entry replace a deeper main
+  // search result for the same key: this TT has no separate qsearch marker.
+  const bool mayStoreQsearch = !ttHit || tte->depth() <= 1;
+  auto saveQsearch = [&](int score, TTFlag flag) {
+    if (!mayStoreQsearch || stopSearching)
+      return;
+
+    int storeScore = score;
+    if (score >= MATE_IN_MAX)
+      storeScore += ply;
+    else if (score <= -MATE_IN_MAX)
+      storeScore -= ply;
+
+    const uint16_t packedMove = moveIsNone(bestMove) ? 0 : bestMove.data;
+    tte->save(hash, static_cast<int16_t>(storeScore), false, flag, 0,
+              packedMove, rawEval, TT.generation());
+  };
 
   if (!isInCheck) {
-    if (stand >= beta)
+    if (stand >= beta) {
+      saveQsearch(stand, TT_BETA);
       return stand;
+    }
     if (stand > alpha)
       alpha = stand;
   } else {
@@ -285,9 +316,11 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
 
     if (score > best) {
       best = score;
+      bestMove = m;
       if (score > alpha) {
         alpha = score;
         if (score >= beta) {
+          saveQsearch(score, TT_BETA);
           return score; // Fail high
         }
       }
@@ -295,9 +328,13 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
   }
 
   if (isInCheck && legalMoves == 0) {
-    return -MATE_SCORE + ply;
+    const int mateScore = -MATE_SCORE + ply;
+    saveQsearch(mateScore, TT_EXACT);
+    return mateScore;
   }
 
+  const TTFlag flag = best > originalAlpha ? TT_EXACT : TT_ALPHA;
+  saveQsearch(best, flag);
   return best;
 }
 
@@ -358,9 +395,8 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
 
   bool isInCheck = inCheck(white_to_move);
 
-  // Check extensions are now per-move inside the main loop,
-  // only for checks with non-negative SEE. This avoids inflating
-  // the search tree on forcing lines (check-check-check).
+  // Check extensions are assigned selectively in the main move loop after
+  // the child position is available and givesCheck can be computed exactly.
 
   nodes++;
 
@@ -484,7 +520,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
   // ============ Razoring ============
   // If the static evaluation is far below alpha in non-PV nodes, drop directly
   // into quiescence search
-  if (!pvNode && !isInCheck && depth < 14) {
+  if (!pvNode && !isInCheck && depth <= 3) {
     int razorMargin = Search::Tune::RazorMarginBase +
                       Search::Tune::RazorMarginMult * depth * depth;
     if (eval < alpha - razorMargin) {
@@ -719,8 +755,12 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     hasLegalMove = true;
     moveCount++;
 
-    // Check extensions removed to prevent tactical search tree explosion in middlegame
-    // (LMR already reduces checks less and quiescence handles tactical lines).
+    // Extend only forcing checks on the principal variation. The depth floor
+    // prevents checks at the qsearch frontier from keeping the regular search
+    // alive indefinitely, and singular extensions retain precedence.
+    if (pvNode && givesCheck && depth >= 3 && extension == 0)
+      extension = 1;
+
     newDepth += extension;
     // Clamp only against negative extensions (cutNode -2) driving newDepth
     // below zero. A natural newDepth==0 must be preserved so leaf nodes

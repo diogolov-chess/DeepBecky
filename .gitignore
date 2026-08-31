@@ -10,6 +10,7 @@ engines/
 relatórios/
 testes_partidas/
 training/
+tests/
 
 # --- Documentos Internos de Arquitetura e IA ---
 AGENTS.md

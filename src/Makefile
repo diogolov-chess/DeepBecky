@@ -207,10 +207,28 @@ endif
 OBJ := $(addprefix $(BUILD_DIR)/,$(SRC:.cpp=.o))
 
 # Targets
-.PHONY: all clean distclean info pgo pgo-gen pgo-use pgo-clean debug help install-deps
+.PHONY: all clean distclean info pgo pgo-gen pgo-use pgo-clean debug help install-deps see-tests
 
 # Default Target
 all: $(TARGET)
+
+# Deterministic SEE regression tests. The target links the engine objects
+# without the UCI entry point and does not alter the production binary.
+SEE_TEST_TARGET := $(BUILD_DIR)/see_tests$(TARGET_EXT)
+SEE_TEST_SRC := ../tests/see_tests.cpp
+SEE_TEST_OBJ := $(filter-out $(BUILD_DIR)/main.o,$(OBJ))
+# The test source is not part of the PGO training workload. Link it against
+# the optimized engine objects, but do not ask Clang to consume engine profile
+# counters for the test runner itself.
+SEE_TEST_CXXFLAGS := $(filter-out -fprofile-use=%,$(CXXFLAGS))
+SEE_TEST_LDFLAGS := $(filter-out -fprofile-use=%,$(LDFLAGS))
+
+see-tests: $(SEE_TEST_TARGET)
+	@$(SEE_TEST_TARGET)
+
+$(SEE_TEST_TARGET): $(SEE_TEST_OBJ) $(SEE_TEST_SRC) | $(BUILD_DIR)
+	@echo "== Linking SEE tests ($(COMPILER_TYPE), $(PROFILE)) =="
+	$(CXX) $(SEE_TEST_CXXFLAGS) $(SEE_TEST_SRC) $(SEE_TEST_OBJ) -o $@ $(SEE_TEST_LDFLAGS)
 
 # Link
 $(TARGET): $(OBJ)
