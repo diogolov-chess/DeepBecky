@@ -51,6 +51,9 @@ public:
     // Get elapsed time since search start
     TimePoint elapsed() const { return now() - startTime; }
 
+    // Reset start time (used when transitioning from ponder to real search on ponderhit)
+    void restartTimer() { startTime = now(); }
+
     // Check if search uses fixed move time
     bool isFixedTime() const { return fixed; }
 

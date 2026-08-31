@@ -258,6 +258,7 @@ void cmdNewGame(Position &engine) {
 }
 
 void cmdPosition(Position &engine, std::istringstream &is) {
+  Threads.waitForSearchFinished();
   std::string token;
   is >> token;
   std::string tokenLower = toLower(token);
@@ -387,6 +388,7 @@ void cmdStop() {
 void cmdPonderHit(Position &engine) {
   // Opponent played the expected move - switch from ponder to normal search
   Threads.ponder.store(false, std::memory_order_relaxed);
+  TimeMgr.restartTimer();
 
   // Reinitialize time management now that real clock starts
   // The search will pick up time checking on the next node
