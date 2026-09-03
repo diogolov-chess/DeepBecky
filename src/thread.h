@@ -2,6 +2,9 @@
 #define DEEPBECKY_THREAD_H
 
 #include "position.h"
+#ifdef ENABLE_SEARCH_STATS
+#include "searchstats.h"
+#endif
 #include <cstdint>
 #include <atomic>
 #include <condition_variable>
@@ -63,6 +66,11 @@ struct alignas(64) SearchThread {
     int nmpMinPly = 0;
     int nmpColor = 0;  // 0 = WHITE, 1 = BLACK
 
+#ifdef ENABLE_SEARCH_STATS
+    SearchStats searchStats;
+    bool collectSearchStats = false;
+#endif
+
     // Search results (read by main thread after search completes)
     Move bestMove = MOVE_NONE;
     int bestScore = -INF_SCORE;
@@ -92,7 +100,6 @@ struct alignas(64) SearchThread {
     void start_searching();
     void wait_for_search_finished();
     void clear();
-    void ageHistory();
 };
 
 // ========================= ThreadPool =========================
@@ -112,6 +119,9 @@ public:
     std::atomic<bool> ponder{false};   // Currently in ponder mode (don't print bestmove)
     bool ponderEnabled = false;        // UCI option "Ponder" enabled
     bool lazySmpDebug = false;         // UCI diagnostic; disabled in normal play
+#ifdef ENABLE_SEARCH_STATS
+    bool searchStatsEnabled = false;
+#endif
 
     ~ThreadPool();
 

@@ -86,4 +86,8 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# --- Outros Arquivos ---
+assets/README.md
+src/build.bat
+
 # --- Fim das regras de ignore ---

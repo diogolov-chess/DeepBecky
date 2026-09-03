@@ -40,6 +40,9 @@ void cmdUci() {
   std::cout << "option name Threads type spin default 4 min 1 max 256"
             << std::endl;
   std::cout << "option name Ponder type check default true" << std::endl;
+  std::cout << "option name Move Overhead type spin default "
+            << DEFAULT_MOVE_OVERHEAD << " min 0 max " << MAX_MOVE_OVERHEAD
+            << std::endl;
   std::cout << "option name EvalFile type string default "
             << NNUE::DEFAULT_MODEL_FILE << std::endl;
   std::cout << "option name TrainingLog type check default false" << std::endl;
@@ -48,6 +51,9 @@ void cmdUci() {
       << std::endl;
   std::cout << "option name LazySmpDebug type check default false" << std::endl;
   std::cout << "option name LazySmpSelfTest type button" << std::endl;
+#ifdef ENABLE_SEARCH_STATS
+  std::cout << "option name Search Stats type check default false" << std::endl;
+#endif
 
   // Tuning parameters
   std::cout << "option name LmrBaseBase type spin default "
@@ -154,6 +160,8 @@ void cmdSetOption(Position &engine, std::istringstream &is) {
     Threads.set(static_cast<size_t>(n));
   } else if (optNameLower == "ponder") {
     Threads.ponderEnabled = (toLower(optValue) == "true");
+  } else if (optNameLower == "move overhead") {
+    TimeMgr.setMoveOverhead(static_cast<TimePoint>(std::stoll(optValue)));
   } else if (optNameLower == "evalfile") {
     const std::string loweredValue = toLower(optValue);
     if (optValue.empty() || loweredValue == NNUE::DEFAULT_MODEL_FILE) {
@@ -195,6 +203,10 @@ void cmdSetOption(Position &engine, std::istringstream &is) {
     const bool passed = Threads.runLazySmpSelectionTests();
     std::cout << "info string Lazy SMP selection self-test "
               << (passed ? "passed" : "FAILED") << std::endl;
+#ifdef ENABLE_SEARCH_STATS
+  } else if (optNameLower == "search stats") {
+    Threads.searchStatsEnabled = (toLower(optValue) == "true");
+#endif
   } else if (optNameLower == "lmrbasebase")
     Search::Tune::LmrBaseBase = std::stoi(optValue);
   else if (optNameLower == "lmrmultbase")
@@ -206,7 +218,7 @@ void cmdSetOption(Position &engine, std::istringstream &is) {
   else if (optNameLower == "capturehistorydivisor")
     Search::Tune::CaptureHistoryDivisor = std::max(1, std::stoi(optValue));
   else if (optNameLower == "aspwindowbase")
-    Search::Tune::AspWindowBase = std::stoi(optValue);
+    Search::Tune::AspWindowBase = std::clamp(std::stoi(optValue), 10, 100);
   else if (optNameLower == "aspwindowthreadmult")
     Search::Tune::AspWindowThreadMult = std::max(1, std::stoi(optValue));
   else if (optNameLower == "futilitychildbase")

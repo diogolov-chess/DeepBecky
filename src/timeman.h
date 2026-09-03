@@ -19,6 +19,10 @@
 
 using TimePoint = int64_t;
 
+// Move overhead range (ms) — reserve for GUI, I/O and thread shutdown.
+constexpr TimePoint DEFAULT_MOVE_OVERHEAD = 30;
+constexpr TimePoint MAX_MOVE_OVERHEAD = 5000;
+
 // Get current time in milliseconds
 inline TimePoint now() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -57,18 +61,26 @@ public:
     // Check if search uses fixed move time
     bool isFixedTime() const { return fixed; }
 
+    void setMoveOverhead(TimePoint value) {
+        moveOverhead = std::clamp(value, TimePoint(0), MAX_MOVE_OVERHEAD);
+    }
+    TimePoint getMoveOverhead() const { return moveOverhead; }
+
+    // Starting and joining helpers is counterproductive when their lifecycle
+    // can consume the complete hard allocation.
+    bool allowsHelperThreads(TimePoint searchTimeMs) const {
+        return searchTimeMs <= 0 || searchTimeMs > moveOverhead;
+    }
+
 private:
     TimePoint startTime    = 0;
     TimePoint optimumTime  = 0;
     TimePoint maximumTime  = 0;
+    TimePoint moveOverhead = DEFAULT_MOVE_OVERHEAD;
     bool fixed             = false;
 };
 
 // Global time manager
 extern TimeManagement TimeMgr;
-
-// Move overhead (ms) — time needed for I/O, etc.
-// Can be made a UCI option later.
-constexpr TimePoint MoveOverhead = 30;
 
 #endif // DEEPBECKY_TIMEMAN_H

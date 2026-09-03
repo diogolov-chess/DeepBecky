@@ -24,7 +24,8 @@ void TimeManagement::init(const SearchLimits& limits, bool whiteToMove, int ply)
 
     if (limits.movetime > 0) {
         // Fixed time per move
-        optimumTime = maximumTime = std::max(TimePoint(1), TimePoint(limits.movetime - MoveOverhead));
+        optimumTime = maximumTime =
+            std::max(TimePoint(1), TimePoint(limits.movetime - moveOverhead));
         return;
     }
 
@@ -56,7 +57,7 @@ void TimeManagement::init(const SearchLimits& limits, bool whiteToMove, int ply)
 
     TimePoint timeLeft =
       std::max(TimePoint(1),
-               myTime + (myInc * (centiMTG - 100) - MoveOverhead * (200 + centiMTG)) / 100);
+               myTime + (myInc * (centiMTG - 100) - moveOverhead * (200 + centiMTG)) / 100);
 
     // Sudden death
     if (limits.movestogo == 0) {
@@ -83,7 +84,9 @@ void TimeManagement::init(const SearchLimits& limits, bool whiteToMove, int ply)
     optimumTime = TimePoint(optScale * static_cast<double>(timeLeft));
     
     // Ensure we never exceed the physical time we have left on the clock
-    TimePoint hardLimit = TimePoint(std::max(1.0, 0.85 * static_cast<double>(myTime) - static_cast<double>(MoveOverhead) - 50.0));
+    TimePoint hardLimit = TimePoint(std::max(
+        1.0, 0.85 * static_cast<double>(myTime)
+                 - static_cast<double>(moveOverhead) - 50.0));
     
     maximumTime =
       TimePoint(std::min(static_cast<double>(hardLimit),

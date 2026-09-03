@@ -97,7 +97,7 @@ void MovePicker::scoreCaptures() {
         // Promotion bonus
         if (promotion) {
             score += PIECE_VALUE[promotion];
-            if (promotion == (us == WHITE ? WQUEEN : BQUEEN))
+            if (promotion == WQUEEN)
                 score += 10000; // Queen promotions first
         }
 

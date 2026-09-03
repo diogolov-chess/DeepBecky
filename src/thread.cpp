@@ -319,9 +319,15 @@ void SearchThread::idle_loop() {
 
         if (idx == 0) {
             // === MAIN THREAD ===
-            // Start all helper threads
-            for (size_t i = 1; i < Threads.size(); i++)
-                Threads.at(i)->start_searching();
+            // Starting and joining helpers costs more than the entire budget
+            // in an emergency clock situation. Keep configured helpers parked
+            // when the hard allocation does not even exceed Move Overhead.
+            // Depth/infinite/ponder searches retain their normal SMP behavior.
+            const bool startHelpers =
+                TimeMgr.allowsHelperThreads(Threads.searchTimeMs);
+            if (startHelpers)
+                for (size_t i = 1; i < Threads.size(); i++)
+                    Threads.at(i)->start_searching();
 
             // Run own search (with time management)
             pos.search(Threads.searchMaxDepth, Threads.searchTimeMs);
@@ -330,8 +336,9 @@ void SearchThread::idle_loop() {
             Threads.stop.store(true, std::memory_order_relaxed);
 
             // Wait for helpers to finish
-            for (size_t i = 1; i < Threads.size(); i++)
-                Threads.at(i)->wait_for_search_finished();
+            if (startHelpers)
+                for (size_t i = 1; i < Threads.size(); i++)
+                    Threads.at(i)->wait_for_search_finished();
 
             // === DEPTH-QUALIFIED LAZY SMP SELECTION (POLICY C2) ===
             std::vector<SelectionCandidate> candidates;
@@ -369,6 +376,16 @@ void SearchThread::idle_loop() {
                 cv.wait(lk, [&] { return !Threads.ponder.load(std::memory_order_relaxed); });
             }
 
+#ifdef ENABLE_SEARCH_STATS
+            if (Threads.searchStatsEnabled) {
+                SearchStats aggregate;
+                for (size_t i = 0; i < Threads.size(); ++i)
+                    aggregate += Threads.at(i)->searchStats;
+                std::cout << "info string searchstats "
+                          << aggregate.toUciString() << std::endl;
+            }
+#endif
+
             if (moveIsNone(bm)) {
                 std::cout << "bestmove 0000" << std::endl;
             } else {
@@ -405,16 +422,27 @@ void SearchThread::idle_loop() {
                               << std::endl;
                 }
 
-                // Extract ponder move from the completed PV (second move).
+                // Extract and validate ponder move from the completed PV (second move).
                 Move ponderMove = MOVE_NONE;
                 const std::vector<Move>& pvLine = bestThread->completedPV;
-                if (pvLine.size() >= 2) {
-                    ponderMove = pvLine[1];
-                }
-
-                std::cout << "bestmove " << pos.moveToUCI(bm);
-                if (!moveIsNone(ponderMove)) {
-                    std::cout << " ponder " << pos.moveToUCI(ponderMove);
+                if (pvLine.size() >= 2 && pvLine[0] == bm) {
+                    Position childPos = pos;
+                    childPos.makeMove(bm);
+                    Move legalMoves[MAX_MOVES];
+                    int numLegal = childPos.generateLegal(legalMoves);
+                    for (int i = 0; i < numLegal; ++i) {
+                        if (sameMoveIdentity(legalMoves[i], pvLine[1])) {
+                            ponderMove = legalMoves[i];
+                            break;
+                        }
+                    }
+                    if (!moveIsNone(ponderMove)) {
+                        std::cout << "bestmove " << pos.moveToUCI(bm) << " ponder " << childPos.moveToUCI(ponderMove);
+                    } else {
+                        std::cout << "bestmove " << pos.moveToUCI(bm);
+                    }
+                } else {
+                    std::cout << "bestmove " << pos.moveToUCI(bm);
                 }
                 std::cout << std::endl;
             }
@@ -457,70 +485,15 @@ void SearchThread::clear() {
     completedDepth = 0;
     completedPV.clear();
     hasCompletedIteration = false;
-}
-
-#ifdef __AVX2__
-#include <immintrin.h>
-
-static void ageInt16Array(int16_t* data, size_t count) {
-    size_t chunks = count / 16;
-    __m256i* vptr = reinterpret_cast<__m256i*>(data);
-    for (size_t i = 0; i < chunks; ++i) {
-        __m256i val = _mm256_loadu_si256(&vptr[i]);
-        __m256i shifted = _mm256_srai_epi16(val, 3);
-        _mm256_storeu_si256(&vptr[i], _mm256_sub_epi16(val, shifted));
-    }
-    for (size_t i = chunks * 16; i < count; ++i) {
-        data[i] = static_cast<int16_t>(data[i] - data[i] / 8);
-    }
-}
-
-static void ageInt32Array(int* data, size_t count) {
-    size_t chunks = count / 8;
-    __m256i* vptr = reinterpret_cast<__m256i*>(data);
-    for (size_t i = 0; i < chunks; ++i) {
-        __m256i val = _mm256_loadu_si256(&vptr[i]);
-        __m256i shifted = _mm256_srai_epi32(val, 3);
-        _mm256_storeu_si256(&vptr[i], _mm256_sub_epi32(val, shifted));
-    }
-    for (size_t i = chunks * 8; i < count; ++i) {
-        data[i] = data[i] - data[i] / 8;
-    }
-}
-#endif
-
-void SearchThread::ageHistory() {
-#ifdef __AVX2__
-    ageInt32Array(&history_heur[0][0][0], sizeof(history_heur) / sizeof(int));
-    ageInt16Array(&contHistory[0][0][0][0][0], sizeof(contHistory) / sizeof(int16_t));
-    ageInt16Array(&pawnHistory[0][0][0], sizeof(pawnHistory) / sizeof(int16_t));
-    ageInt16Array(&captureHistory[0][0][0], sizeof(captureHistory) / sizeof(int16_t));
-#else
-    // Keep cross-move learning but prevent score saturation over long games.
-    for (int c = 0; c < 2; ++c)
-        for (int from = 0; from < 64; ++from)
-            for (int to = 0; to < 64; ++to)
-                history_heur[c][from][to] = (history_heur[c][from][to] * 7) / 8;
-
-    for (int layer = 0; layer < 4; ++layer)
-        for (int prevPiece = 0; prevPiece < PIECE_NB; ++prevPiece)
-            for (int prevTo = 0; prevTo < 64; ++prevTo)
-                for (int piece = 0; piece < PIECE_NB; ++piece)
-                    for (int to = 0; to < 64; ++to)
-                        contHistory[layer][prevPiece][prevTo][piece][to] =
-                            static_cast<int16_t>((contHistory[layer][prevPiece][prevTo][piece][to] * 7) / 8);
-
-    for (int pawnHash = 0; pawnHash < 8192; ++pawnHash)
-        for (int piece = 0; piece < PIECE_NB; ++piece)
-            for (int to = 0; to < 64; ++to)
-                pawnHistory[pawnHash][piece][to] =
-                    static_cast<int16_t>((pawnHistory[pawnHash][piece][to] * 7) / 8);
-
-    for (int piece = 0; piece < PIECE_NB; ++piece)
-        for (int to = 0; to < 64; ++to)
-            for (int capturedType = 0; capturedType < 6; ++capturedType)
-                captureHistory[piece][to][capturedType] =
-                    static_cast<int16_t>((captureHistory[piece][to][capturedType] * 7) / 8);
+    bestMoveChanges.store(0, std::memory_order_relaxed);
+    previousTimeReduction = 1.0;
+    bestPreviousScore = -INF_SCORE;
+    bestPreviousAverageScore = -INF_SCORE;
+    nmpMinPly = 0;
+    nmpColor = WHITE;
+#ifdef ENABLE_SEARCH_STATS
+    searchStats.clear();
+    collectSearchStats = false;
 #endif
 }
 
@@ -590,6 +563,10 @@ void ThreadPool::startThinking(Position& rootPos, int maxDepth, int timeMs, bool
         t->completedPV.clear();
         t->hasCompletedIteration = false;
         t->bestMoveChanges.store(0, std::memory_order_relaxed);
+#ifdef ENABLE_SEARCH_STATS
+        t->searchStats.clear();
+        t->collectSearchStats = searchStatsEnabled;
+#endif
     }
 
     TT.newSearch();

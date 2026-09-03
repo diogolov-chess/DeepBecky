@@ -3,6 +3,8 @@
 
 #include "types.h"
 
+#include <string>
+
 // Forward declaration
 class Position;
 
@@ -85,11 +87,21 @@ int reduction(bool improving, int depth, int moveCount);
 // Futility pruning margins
 int futilityMargin(int depth, bool improving);
 
+// Reverse futility pruning safety policy. Zugzwang-sensitive endings use a
+// shallower effective limit, quiet TT moves must be searched, and fail-high
+// values are softened before being propagated.
+int rfpDepthLimit(bool zugzwangSensitive);
+bool rfpTtMoveAllowsCutoff(Move ttMove, bool ttCapture);
+int rfpReturnValue(int eval, int beta);
+
 // Move count pruning threshold
 int futilityMoveCount(bool improving, int depth);
 
 // Draw evaluation with contempt
 int drawScore(uint64_t nodes);
+
+// Canonical UCI score formatting used by every root-search exit path.
+std::string uciScore(int score);
 
 } // namespace Search
 

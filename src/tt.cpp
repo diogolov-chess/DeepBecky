@@ -1,7 +1,9 @@
-// Transposition Table with 3-entry clusters (32-byte cache-line aligned) and static evaluation storage
+// Transposition table with coherent 16-byte entries, four entries per cache line.
 #include "tt.h"
-#include <iostream>
 #include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <new>
 #include <thread>
 #include <vector>
 
@@ -12,6 +14,71 @@
 
 // Global transposition table instance
 TranspositionTable TT;
+
+namespace {
+
+uint64_t packPayload(const TTData& data) {
+    return static_cast<uint64_t>(data.depth8)
+         | (static_cast<uint64_t>(data.genBound8) << 8)
+         | (static_cast<uint64_t>(data.move.data) << 16)
+         | (static_cast<uint64_t>(static_cast<uint16_t>(data.value)) << 32)
+         | (static_cast<uint64_t>(static_cast<uint16_t>(data.eval)) << 48);
+}
+
+TTData unpackData(uint64_t key, uint64_t payload) {
+    TTData data;
+    data.key = key;
+    data.depth8 = static_cast<uint8_t>(payload);
+    data.genBound8 = static_cast<uint8_t>(payload >> 8);
+    data.move.data = static_cast<uint16_t>(payload >> 16);
+    data.value = static_cast<int16_t>(payload >> 32);
+    data.eval = static_cast<int16_t>(payload >> 48);
+    if (!data.isOccupied())
+        data.eval = EVAL_NONE;
+    return data;
+}
+
+} // namespace
+
+bool TTEntry::read(TTData& data) const noexcept {
+    const uint64_t signature = keyXor_.load(std::memory_order_acquire);
+    const uint64_t payload = payload_.load(std::memory_order_relaxed);
+    data = unpackData(signature ^ payload, payload);
+    return true;
+}
+
+void TTEntry::save(uint64_t k, int16_t v, bool pv, TTFlag b, int d,
+                   uint16_t mv, int16_t ev,
+                   uint8_t generation8) noexcept {
+    assert(d >= TT_DEPTH_QS && d <= 254);
+
+    TTData oldData;
+    read(oldData);
+    TTData newData = oldData;
+
+    // Preserve the previous move when the same position is saved without one.
+    if (mv != 0 || k != oldData.key)
+        newData.move.data = mv;
+
+    const bool replace = b == TT_EXACT
+                      || k != oldData.key
+                      || d + 2 * static_cast<int>(pv) > oldData.depth() - 4
+                      || oldData.relativeAge(generation8) != 0;
+
+    if (replace) {
+        newData.key = k;
+        newData.depth8 = static_cast<uint8_t>(
+            std::clamp(d + TT_DEPTH_OFFSET, TT_DEPTH_OFFSET, 255));
+        newData.genBound8 = static_cast<uint8_t>(
+            generation8 | (static_cast<uint8_t>(pv) << 2) | b);
+        newData.value = v;
+        newData.eval = ev;
+    }
+
+    const uint64_t payload = packPayload(newData);
+    payload_.store(payload, std::memory_order_relaxed);
+    keyXor_.store(newData.key ^ payload, std::memory_order_release);
+}
 
 // ========================= Implementation =========================
 
@@ -85,10 +152,12 @@ void TranspositionTable::resize(size_t sizeMB) {
     }
     
     if (!table_) {
-        table_ = static_cast<TTCluster*>(_aligned_malloc(allocSize, 32));
+        table_ = static_cast<TTCluster*>(
+            _aligned_malloc(allocSize, alignof(TTCluster)));
     }
 #else
-    table_ = static_cast<TTCluster*>(aligned_alloc(32, allocSize));
+    table_ = static_cast<TTCluster*>(
+        aligned_alloc(alignof(TTCluster), allocSize));
 #endif
 
     if (!table_) {
@@ -98,6 +167,8 @@ void TranspositionTable::resize(size_t sizeMB) {
     }
 
     clusterCount_ = newClusterCount;
+    for (size_t i = 0; i < clusterCount_; ++i)
+        ::new (static_cast<void*>(table_ + i)) TTCluster;
     clear();
 }
 
@@ -115,9 +186,14 @@ void TranspositionTable::clear() {
     size_t threadCount = std::max(size_t(1), size_t(std::thread::hardware_concurrency()));
     if (threadCount > 16) threadCount = 16;  // cap to avoid over-subscription
 
+    auto clearRange = [this](size_t start, size_t len) {
+        for (size_t i = start; i < start + len; ++i)
+            for (int entry = 0; entry < CLUSTER_SIZE; ++entry)
+                table_[i].entry[entry].clear();
+    };
+
     if (threadCount == 1 || clusterCount_ < 1024) {
-        // Small table or single core: just memset directly
-        std::memset(static_cast<void*>(table_), 0, clusterCount_ * sizeof(TTCluster));
+        clearRange(0, clusterCount_);
         return;
     }
 
@@ -128,44 +204,42 @@ void TranspositionTable::clear() {
     for (size_t i = 0; i < threadCount; ++i) {
         const size_t start = stride * i;
         const size_t len   = (i + 1 != threadCount) ? stride : clusterCount_ - start;
-        workers.emplace_back([this, start, len]() {
-            std::memset(reinterpret_cast<char*>(table_) + start * sizeof(TTCluster), 0, len * sizeof(TTCluster));
-        });
+        workers.emplace_back(clearRange, start, len);
     }
 
     for (auto& w : workers)
         w.join();
 }
 
-// Probe the transposition table.
-// Returns a pointer to the matching entry (or replacement candidate).
-// Sets 'found' to true if the position's key matches.
-// NOTE: This function is read-only — it does NOT write to the TT.
-// Generation refresh happens only in save() when the entry is actually stored.
-// This is critical for Lazy SMP: writing genBound8 here would cause cache line
-// invalidation across all cores on every TT read, destroying performance.
-TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
+TTProbe TranspositionTable::probe(uint64_t key) {
     TTEntry* const tte = firstEntry(key);
-    const uint16_t k16 = uint16_t(key);
+    TTEntry* replace = nullptr;
+    int replaceValue = std::numeric_limits<int>::max();
 
     for (int i = 0; i < CLUSTER_SIZE; ++i) {
-        if (tte[i].key16 == k16 || !tte[i].depth8) {
-            found = tte[i].isOccupied();
-            return &tte[i];
+        TTData data;
+        if (!tte[i].read(data))
+            continue;
+
+        if (data.isOccupied() && data.key == key)
+            return TTProbe{true, data, TTWriter(&tte[i])};
+
+        if (!data.isOccupied())
+            return TTProbe{false, TTData{}, TTWriter(&tte[i])};
+
+        const int value = static_cast<int>(data.depth8)
+                        - static_cast<int>(data.relativeAge(generation8_));
+        if (value < replaceValue) {
+            replaceValue = value;
+            replace = &tte[i];
         }
     }
 
-    // All 3 entries occupied by different keys — find best replacement candidate
-    // Replace the entry with lowest (depth - 8 * relativeAge)
-    TTEntry* replace = tte;
-    for (int i = 1; i < CLUSTER_SIZE; ++i) {
-        if (replace->depth8 - replace->relativeAge(generation8_)
-            > tte[i].depth8 - tte[i].relativeAge(generation8_))
-            replace = &tte[i];
-    }
-
-    found = false;
-    return replace;
+    // Defensive fallback. read() always returns a snapshot, so normal probes
+    // select either an empty slot or the lowest replacement-value slot.
+    if (!replace)
+        replace = tte;
+    return TTProbe{false, TTData{}, TTWriter(replace)};
 }
 
 // Returns an approximation of hashtable occupation (permille).
@@ -177,8 +251,9 @@ int TranspositionTable::hashfull() const {
     size_t sampleClusters = std::min(clusterCount_, size_t(1000));
     for (size_t i = 0; i < sampleClusters; ++i) {
         for (int j = 0; j < CLUSTER_SIZE; ++j) {
-            cnt += table_[i].entry[j].isOccupied()
-                && table_[i].entry[j].relativeAge(generation8_) == 0;
+            TTData data;
+            cnt += table_[i].entry[j].read(data) && data.isOccupied()
+                && data.relativeAge(generation8_) == 0;
         }
     }
 

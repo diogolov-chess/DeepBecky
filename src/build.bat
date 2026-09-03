@@ -13,7 +13,7 @@ if exist "D:\msys64\msys2_shell.cmd" set "MSYS2_SHELL=D:\msys64\msys2_shell.cmd"
 :MENU
 cls
 echo ===============================================================================
-echo                DEEP BECKY 2.5 - CENTRAL DE COMPILACAO E PGO
+echo                DEEP BECKY 3.0 - CENTRAL DE COMPILACAO E PGO
 echo ===============================================================================
 echo  Diretorio da Engine: %ENGINE_DIR%
 if defined MSYS2_SHELL (
@@ -199,7 +199,7 @@ if not exist "DeepBecky_3.0.exe" (
 )
 
 echo ===============================================================================
-echo                DEEP BECKY 2.5 - CENTRAL DE TESTES E BENCHMARK
+echo                DEEP BECKY 3.0 - CENTRAL DE TESTES E BENCHMARK
 echo ===============================================================================
 echo  Executavel Ativo: %ENGINE_DIR%\DeepBecky_3.0.exe
 echo ===============================================================================

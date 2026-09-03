@@ -194,10 +194,7 @@ bool Position::isPseudoLegal(const Move& m) const {
 
             if (promo) {
                 if ((us == WHITE && to_sq < 56) || (us == BLACK && to_sq > 7)) return false;
-                if (promo != (us == WHITE ? WQUEEN : BQUEEN) &&
-                    promo != (us == WHITE ? WROOK : BROOK) &&
-                    promo != (us == WHITE ? WBISHOP : BBISHOP) &&
-                    promo != (us == WHITE ? WKNIGHT : BKNIGHT)) return false;
+                if (!isValidPromotionType(promo)) return false;
             } else {
                 if ((us == WHITE && to_sq >= 56) || (us == BLACK && to_sq <= 7)) return false;
             }

@@ -91,10 +91,10 @@ TARGET := DeepBecky_3.0$(TARGET_EXT)
 
 # Source and Header Files
 SRC := main.cpp magic.cpp bitboard.cpp position.cpp movegen.cpp threats.cpp \
-       evaluate.cpp nnue.cpp search.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp thread.cpp
+       evaluate.cpp nnue.cpp search.cpp searchstats.cpp tt.cpp uci.cpp timeman.cpp movepick.cpp thread.cpp
 
 HEADERS := types.h magic.h bitboard.h position.h movegen.h movepick.h threats.h \
-           evaluate.h nnue.h search.h tt.h uci.h timeman.h thread.h
+           evaluate.h nnue.h search.h searchstats.h tt.h uci.h timeman.h thread.h
 
 # Directories
 BUILD_DIR := build
@@ -173,6 +173,15 @@ endif
 CXXFLAGS_BASE := $(CXXSTD) $(OPT_BASE) $(LTO_FLAG) $(WARN) $(ARCHFLAGS) -faligned-new -I. -DENGINE_VERSION="\"$(ENGINE_VERSION_STR)\""
 LDFLAGS_BASE  := $(STRIPFLAG) $(LTO_FLAG) $(LDFLAGS_EXTRA)
 
+ifeq ($(SEARCH_STATS),1)
+  # Keep diagnostic objects and executable isolated. This prevents Make from
+  # reusing objects compiled with different preprocessor flags, and prevents a
+  # diagnostic executable from masquerading as the production binary.
+  BUILD_DIR := build-searchstats
+  TARGET := DeepBecky_3.0-searchstats$(TARGET_EXT)
+  CXXFLAGS_BASE += -DENABLE_SEARCH_STATS
+endif
+
 ifeq ($(STATIC),1)
   ifeq ($(DETECTED_OS),Windows)
     LDFLAGS_BASE += -static -static-libgcc -static-libstdc++ -lpthread
@@ -207,7 +216,7 @@ endif
 OBJ := $(addprefix $(BUILD_DIR)/,$(SRC:.cpp=.o))
 
 # Targets
-.PHONY: all clean distclean info pgo pgo-gen pgo-use pgo-clean debug help install-deps see-tests
+.PHONY: all clean distclean info pgo pgo-gen pgo-use pgo-clean debug help install-deps see-tests search-tests tt-tests sanitize-ub sanitize-asan
 
 # Default Target
 all: $(TARGET)
@@ -229,6 +238,34 @@ see-tests: $(SEE_TEST_TARGET)
 $(SEE_TEST_TARGET): $(SEE_TEST_OBJ) $(SEE_TEST_SRC) | $(BUILD_DIR)
 	@echo "== Linking SEE tests ($(COMPILER_TYPE), $(PROFILE)) =="
 	$(CXX) $(SEE_TEST_CXXFLAGS) $(SEE_TEST_SRC) $(SEE_TEST_OBJ) -o $@ $(SEE_TEST_LDFLAGS)
+
+# Deterministic search/TT/promotion regression tests.
+SEARCH_TEST_TARGET := $(BUILD_DIR)/search_regression_tests$(TARGET_EXT)
+SEARCH_TEST_SRC := ../tests/search_regression_tests.cpp
+SEARCH_TEST_OBJ := $(filter-out $(BUILD_DIR)/main.o,$(OBJ))
+SEARCH_TEST_CXXFLAGS := $(filter-out -fprofile-use=%,$(CXXFLAGS))
+SEARCH_TEST_LDFLAGS := $(filter-out -fprofile-use=%,$(LDFLAGS))
+
+search-tests: $(SEARCH_TEST_TARGET)
+	@$(SEARCH_TEST_TARGET)
+
+$(SEARCH_TEST_TARGET): $(SEARCH_TEST_OBJ) $(SEARCH_TEST_SRC) | $(BUILD_DIR)
+	@echo "== Linking search regression tests ($(COMPILER_TYPE), $(PROFILE)) =="
+	$(CXX) $(SEARCH_TEST_CXXFLAGS) $(SEARCH_TEST_SRC) $(SEARCH_TEST_OBJ) -o $@ $(SEARCH_TEST_LDFLAGS)
+
+# Coherent transposition-table snapshot and concurrency tests.
+TT_TEST_TARGET := $(BUILD_DIR)/tt_concurrency_tests$(TARGET_EXT)
+TT_TEST_SRC := ../tests/tt_concurrency_tests.cpp
+TT_TEST_OBJ := $(BUILD_DIR)/tt.o
+TT_TEST_CXXFLAGS := $(filter-out -fprofile-use=%,$(CXXFLAGS))
+TT_TEST_LDFLAGS := $(filter-out -fprofile-use=%,$(LDFLAGS))
+
+tt-tests: $(TT_TEST_TARGET)
+	@$(TT_TEST_TARGET)
+
+$(TT_TEST_TARGET): $(TT_TEST_OBJ) $(TT_TEST_SRC) | $(BUILD_DIR)
+	@echo "== Linking TT concurrency tests ($(COMPILER_TYPE), $(PROFILE)) =="
+	$(CXX) $(TT_TEST_CXXFLAGS) $(TT_TEST_SRC) $(TT_TEST_OBJ) -o $@ $(TT_TEST_LDFLAGS)
 
 # Link
 $(TARGET): $(OBJ)
@@ -426,10 +463,22 @@ endif
 # DEBUG BUILD
 # ============================================================================
 
-debug: CXXFLAGS := $(CXXSTD) -g -O0 -Wall -Wextra -DDEBUG -I.
+debug: CXXFLAGS := $(CXXSTD) -g -O0 -Wall -Wextra -DDEBUG -I. -DENGINE_VERSION="\"$(ENGINE_VERSION_STR) (Debug)\""
 debug: LDFLAGS := $(STRIPFLAG)
 debug: clean all
 	@echo == Debug build complete ==
+
+# UndefinedBehaviorSanitizer (UBSan)
+sanitize-ub: CXXFLAGS := $(CXXSTD) -g -O1 -fsanitize=undefined -fno-omit-frame-pointer $(WARN) $(ARCHFLAGS) -faligned-new -I. -DENGINE_VERSION="\"$(ENGINE_VERSION_STR) (UBSan)\""
+sanitize-ub: LDFLAGS := -fsanitize=undefined $(LDFLAGS_EXTRA)
+sanitize-ub: clean all
+	@echo == UBSan build complete ==
+
+# AddressSanitizer (ASan)
+sanitize-asan: CXXFLAGS := $(CXXSTD) -g -O1 -fsanitize=address -fno-omit-frame-pointer $(WARN) $(ARCHFLAGS) -faligned-new -I. -DENGINE_VERSION="\"$(ENGINE_VERSION_STR) (ASan)\""
+sanitize-asan: LDFLAGS := -fsanitize=address $(LDFLAGS_EXTRA)
+sanitize-asan: clean all
+	@echo == ASan build complete ==
 
 # ============================================================================
 # DIAGNOSTICS & HELP
@@ -446,6 +495,7 @@ info:
 	@echo PROFILE     = $(PROFILE)
 	@echo PGO         = $(PGO)
 	@echo PGO_DEPTH   = $(PGO_DEPTH)
+	@echo SEARCH_STATS= $(SEARCH_STATS)
 	@echo LTO_FLAG    = $(LTO_FLAG)
 	@echo STATIC      = $(STATIC)
 	@echo ARCHFLAGS   = $(ARCHFLAGS)
@@ -475,6 +525,9 @@ help:
 	@echo   make install-deps                         - Install build dependencies (apt-get)
 	@echo.
 	@echo  ===== COMUNS =====
+	@echo   make search-tests                           - Regressões de busca/TT/relógio
+	@echo   make tt-tests                               - Estresse de snapshots coerentes da TT
+	@echo   make SEARCH_STATS=1 CXX=clang++ PROFILE=bmi2 - Build diagnóstico separado
 	@echo   make debug                                 - Debug build
 	@echo   make clean                                 - Remove object files and binary
 	@echo   make distclean                             - Remove objects, binary and PGO data

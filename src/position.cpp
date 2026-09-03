@@ -641,10 +641,10 @@ std::string Position::moveToUCI(const Move& m) const {
     int promoType = movePromotionType(m);
     if (promoType) {
         switch (promoType) {
-            case WQUEEN: case BQUEEN: u += 'q'; break;
-            case WROOK:  case BROOK:  u += 'r'; break;
-            case WBISHOP: case BBISHOP: u += 'b'; break;
-            case WKNIGHT: case BKNIGHT: u += 'n'; break;
+            case WQUEEN:  u += 'q'; break;
+            case WROOK:   u += 'r'; break;
+            case WBISHOP: u += 'b'; break;
+            case WKNIGHT: u += 'n'; break;
         }
     }
     return u;
@@ -678,8 +678,6 @@ Move Position::uciToMove(const std::string& s) {
         else if (promo_char == 'b') expected_promo = WBISHOP;
         else if (promo_char == 'n') expected_promo = WKNIGHT;
         else return false;
-        
-        if (promoType > WKING) expected_promo += 6; // Adjust for Black pieces
         
         return promoType == expected_promo;
     };
@@ -722,8 +720,18 @@ void Position::clearHeuristics() {
     }
 }
 
-bool Position::isFiftyMoveDraw() const {
-    return halfmove >= 100;
+bool Position::isFiftyMoveDraw(bool isInCheck) {
+    if (halfmove < 100)
+        return false;
+
+    // On the hundredth halfmove, checkmate still takes precedence over a
+    // claimable draw. Outside check there cannot be checkmate. In check, the
+    // draw applies only if at least one legal evasion exists.
+    if (!isInCheck)
+        return true;
+
+    Move evasions[MAX_MOVES];
+    return generateLegal(evasions) > 0;
 }
 
 bool Position::isThreefoldRepetition(int ply) const {
@@ -772,8 +780,8 @@ bool Position::isInsufficientMaterial() const {
     return false;
 }
 
-bool Position::isDraw(int ply) {
-    if (halfmove >= 100) return true;
+bool Position::isDraw(int ply, bool isInCheck) {
+    if (isFiftyMoveDraw(isInCheck)) return true;
     if (isThreefoldRepetition(ply)) return true;
     // Skip expensive isInsufficientMaterial in most cases
     // Only check if very few pieces remain (fast check first)
@@ -786,7 +794,10 @@ bool Position::isDraw(int ply) {
 bool Position::SEE(const Move& m, int threshold) const {
     // Returns true if SEE value >= threshold
     
-    if (!moveIsCapture(m)) return 0 >= threshold;
+    // Non-capture promotions retain existing contract
+    if (moveIsPromotion(m) && !moveIsCapture(m)) {
+        return 0 >= threshold;
+    }
 
     const int from_sq = moveFrom(m);
     const int to_sq = moveTo(m);
@@ -809,25 +820,26 @@ bool Position::SEE(const Move& m, int threshold) const {
     } else {
         capturedPiece = piece_board[to_sq];
     }
-    if (capturedPiece == EMPTY) return false;
 
-    // Include the material gained by replacing the pawn with the promoted
-    // piece. This applies only to capture-promotions because non-captures
-    // retain the current quiet-SEE contract above.
-    const int promotionGain = PIECE_VALUE[landingPiece] - PIECE_VALUE[movingPiece];
+    // Include the material gained by replacing the pawn with the promoted piece.
+    const int promotionGain = promotionType
+        ? (PIECE_VALUE[landingPiece] - PIECE_VALUE[movingPiece])
+        : 0;
+
+    // Initial gain: piece captured (if any) + promotion gain
+    const int initialGain = (capturedPiece != EMPTY ? PIECE_VALUE[capturedPiece] : 0) + promotionGain;
 
     // Quick early exit: if the initial gain cannot reach the threshold, fail.
-    int swap = PIECE_VALUE[capturedPiece] + promotionGain - threshold;
-    if (swap < 0) return false;  // Even capturing the piece doesn't meet threshold
+    int swap = initialGain - threshold;
+    if (swap < 0) return false;  // Even without recapture, doesn't meet threshold
     
     // If the piece on the destination can be recaptured and the remaining
-    // material still reaches the threshold, the capture is good.
+    // material still reaches the threshold, the move is good.
     swap = PIECE_VALUE[landingPiece] - swap;
     if (swap <= 0) return true;  // Even if we lose our piece, we still profit enough
     
     // Need full SEE calculation
-    U64 occ = pieces();
-    occ ^= (1ULL << from_sq);
+    U64 occ = (pieces() ^ (1ULL << from_sq)) | (1ULL << to_sq);
     
     if (moveIsEnPassant(m)) {
         int ep_sq = to_sq + (side == WHITE ? -8 : 8);
@@ -839,8 +851,22 @@ bool Position::SEE(const Move& m, int threshold) const {
     allAttackers &= occ;
     allAttackers &= ~(1ULL << from_sq);
     
+    // Fast path: if opponent has no attackers to to_sq, move is 100% safe
+    const Color them = (side == WHITE) ? BLACK : WHITE;
+    if (!(allAttackers & color_bitboards[them])) {
+        return true;
+    }
+
     U64 whitePieces = color_bitboards[WHITE] & occ;
     U64 blackPieces = color_bitboards[BLACK] & occ;
+
+    // A pinned piece cannot legally recapture if moving it exposes its king.
+    // These masks are computed from the parent position, as in the normal
+    // SEE implementation; removed blockers are filtered by occ in the loop.
+    U64 whitePinners = 0;
+    U64 blackPinners = 0;
+    const U64 whiteBlockers = blockersForKing(true, whitePinners);
+    const U64 blackBlockers = blockersForKing(false, blackPinners);
     
     int stm = side;
     int result = 1;
@@ -851,6 +877,16 @@ bool Position::SEE(const Move& m, int threshold) const {
         
         U64 stmPieces = (stm == WHITE) ? whitePieces : blackPieces;
         U64 stmAttackers = allAttackers & stmPieces;
+
+        // blockersForKing(side, pinners) returns the enemy pieces pinning
+        // side's king. A side's own blockers must therefore be removed from
+        // its candidate recaptures while those pinners remain occupied.
+        const U64 kingPinners = (stm == WHITE) ? whitePinners : blackPinners;
+        if (kingPinners & occ) {
+            const U64 pinnedBlockers =
+                (stm == WHITE) ? whiteBlockers : blackBlockers;
+            stmAttackers &= ~pinnedBlockers;
+        }
         
         if (!stmAttackers) break;
         
@@ -877,10 +913,20 @@ bool Position::SEE(const Move& m, int threshold) const {
         }
         
         if (!bb) break;
-        
+
         // Check for early exit
         if (swap < result) break;
-        
+
+        // A king cannot make a recapture onto a square still defended by the
+        // opponent. Treat that case exactly instead of accepting the king as
+        // an ordinary least valuable attacker.
+        if (attackerPiece == WKING || attackerPiece == BKING) {
+            const U64 opposingPieces =
+                (stm == WHITE) ? blackPieces : whitePieces;
+            return bool((allAttackers & occ & opposingPieces) ? result ^ 1
+                                                              : result);
+        }
+
         // Remove attacker from occupancy
         int attackerSq = lsb_index(bb);
         occ ^= (1ULL << attackerSq);

@@ -1,10 +1,11 @@
-// Transposition Table with 3-entry clusters (32-byte cache-line aligned) and static evaluation storage
+// Transposition table with coherent 16-byte entries, four entries per cache line.
 #ifndef DEEPBECKY_TT_H
 #define DEEPBECKY_TT_H
 
-#include <cstdint>
-#include <cstring>
 #include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <cstdint>
 #include "types.h"
 
 // ========================= Constants =========================
@@ -18,6 +19,12 @@ static constexpr int GEN_MASK       = (0xFF << GEN_BITS) & 0xFF;     // 0xF8
 // Sentinel value for "no eval stored"
 static constexpr int16_t EVAL_NONE = -32001;
 
+// depth8 == 0 is reserved for an empty entry. Occupied entries store logical
+// depth + 1, allowing qsearch depth 0 and main-search depth 1 to remain
+// distinct without increasing TTEntry size.
+static constexpr int TT_DEPTH_OFFSET = 1;
+static constexpr int TT_DEPTH_QS = 0;
+
 // ========================= TT Flag (Bound) =========================
 enum TTFlag : uint8_t {
     TT_NONE  = 0,   // No bound (empty or eval-only)
@@ -26,84 +33,91 @@ enum TTFlag : uint8_t {
     TT_EXACT = 3    // Exact value
 };
 
-// ========================= TTEntry =========================
-// 10-byte transposition table entry, optimized for cache efficiency.
-// Field order matches access pattern in probe() for best sequential reads.
-//
-// key16       16 bit
-// depth8       8 bit
-// genBound8    8 bit  (gen:5 + pv:1 + bound:2)
-// move16      16 bit  (from:6 + to:6 + type:2 + promo:2)
-// value16     16 bit
-// eval16      16 bit  (static eval, NEW in Phase 2)
-//
-#pragma pack(push, 1)
-struct TTEntry {
-    // --- Data fields ---
-    uint16_t key16     = 0;
-    uint8_t  depth8    = 0;
-    uint8_t  genBound8 = 0;
-    uint16_t move16    = 0;  // packed: from(6)+to(6)+type(2)+promo(2)
-    int16_t  value16   = 0;
-    int16_t  eval16    = EVAL_NONE;
+// ========================= Coherent TT snapshots =========================
+// The shared TT stores one complete 64-bit payload and a 64-bit signature
+// (full Zobrist key XOR payload). Both words are lock-free atomics. A reader
+// accepts the payload for a requested position only when XOR reconstructs the
+// exact full key; an interleaving between two writes becomes a miss instead of
+// a hybrid record. All chess fields reside in the same atomic payload.
+struct TTData {
+    uint64_t key = 0;
+    uint8_t depth8 = 0;
+    uint8_t genBound8 = 0;
+    Move move = MOVE_NONE;
+    int16_t value = 0;
+    int16_t eval = EVAL_NONE;
 
-    // --- Accessors ---
-    TTFlag flag() const {
-        return static_cast<TTFlag>(genBound8 & 0x3);
-    }
-
-    bool isPV() const {
-        return (genBound8 & 0x4) != 0;
-    }
-
-    bool isOccupied() const {
-        return depth8 != 0;
-    }
-
+    bool isOccupied() const { return depth8 != 0; }
     int depth() const {
-        return static_cast<int>(depth8);
+        return isOccupied() ? static_cast<int>(depth8) - TT_DEPTH_OFFSET : -1;
     }
-
+    TTFlag flag() const { return static_cast<TTFlag>(genBound8 & 0x3); }
+    bool isPV() const { return (genBound8 & 0x4) != 0; }
     uint8_t relativeAge(uint8_t generation8) const {
-        return static_cast<uint8_t>((GEN_CYCLE + generation8 - genBound8) & GEN_MASK);
+        return static_cast<uint8_t>(
+            (GEN_CYCLE + generation8 - genBound8) & GEN_MASK);
     }
+};
 
-    // Overwrite if exact bound, different position, deeper+PV, or older generation.
+class alignas(16) TTEntry {
+public:
+    TTEntry() noexcept : keyXor_(0), payload_(0) {}
+
+    bool read(TTData& data) const noexcept;
     void save(uint64_t k, int16_t v, bool pv, TTFlag b, int d,
-              uint16_t mv, int16_t ev, uint8_t generation8)
-    {
-        // Preserve old move if we don't have a new one
-        if (mv || uint16_t(k) != key16)
-            move16 = mv;
-
-        // Overwrite less valuable entries (cheapest checks first)
-        if (b == TT_EXACT
-            || uint16_t(k) != key16
-            || d + 2 * pv > depth8 - 4
-            || relativeAge(generation8))
-        {
-            key16     = uint16_t(k);
-            depth8    = uint8_t(std::max(d, 1)); // min depth 1 to keep isOccupied
-            genBound8 = uint8_t(generation8 | (uint8_t(pv) << 2) | b);
-            value16   = v;
-            eval16    = ev;
-        }
+              uint16_t mv, int16_t ev, uint8_t generation8) noexcept;
+    void clear() noexcept {
+        payload_.store(0, std::memory_order_relaxed);
+        keyXor_.store(0, std::memory_order_relaxed);
     }
+
+    // Convenience accessors are intended for initialization/tests. Search code
+    // consumes the single TTData snapshot returned by probe().
+    bool isOccupied() const noexcept {
+        TTData data;
+        return read(data) && data.isOccupied();
+    }
+    int depth() const noexcept {
+        TTData data;
+        return read(data) ? data.depth() : -1;
+    }
+
+private:
+    std::atomic<uint64_t> keyXor_;
+    std::atomic<uint64_t> payload_;
 };
-#pragma pack(pop)
 
-static_assert(sizeof(TTEntry) == 10, "TTEntry must be 10 bytes");
+static_assert(std::atomic<uint64_t>::is_always_lock_free,
+              "Coherent TT requires lock-free 64-bit atomics");
+static_assert(sizeof(TTEntry) == 16, "TTEntry must be 16 bytes");
 
-// ========================= Cluster =========================
-// 3 entries per cluster = 30 bytes + 2 padding = 32 bytes (cache-aligned)
-static constexpr int CLUSTER_SIZE = 3;
+class TTWriter {
+public:
+    explicit TTWriter(TTEntry* entry = nullptr) : entry_(entry) {}
+    void save(uint64_t k, int16_t v, bool pv, TTFlag b, int d,
+              uint16_t mv, int16_t ev, uint8_t generation8) const noexcept {
+        assert(entry_ != nullptr);
+        entry_->save(k, v, pv, b, d, mv, ev, generation8);
+    }
 
-struct alignas(32) TTCluster {
+private:
+    TTEntry* entry_;
+};
+
+struct TTProbe {
+    bool found = false;
+    TTData data{};
+    TTWriter writer{};
+};
+
+// Four 16-byte entries occupy one complete cache line.
+static constexpr int CLUSTER_SIZE = 4;
+
+struct alignas(64) TTCluster {
     TTEntry entry[CLUSTER_SIZE];
-    char padding[2];
 };
 
-static_assert(sizeof(TTCluster) == 32, "Cluster must be 32 bytes");
+static_assert(sizeof(TTCluster) == 64, "TT cluster must be one cache line");
 
 // ========================= Move Packing for TT =========================
 // Pack a Move's squares+flags into 16 bits for TT storage:
@@ -146,10 +160,9 @@ public:
     void newSearch() { generation8_ += GEN_DELTA; }
     uint8_t generation() const { return generation8_; }
 
-    // Probe: returns pointer to matching entry (found=true) or
-    // to the best replacement candidate (found=false).
-    // Read-only: does NOT write to the TT. Use tte->save() to store data.
-    TTEntry* probe(uint64_t key, bool& found);
+    // Probe returns an immutable coherent snapshot plus a separate writer for
+    // the matching entry or best replacement candidate.
+    TTProbe probe(uint64_t key);
 
     int hashfull() const;
 

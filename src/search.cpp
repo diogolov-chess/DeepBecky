@@ -14,6 +14,31 @@
 #include <iostream>
 #include <sstream>
 
+#ifdef ENABLE_SEARCH_STATS
+#define DB_STAT_INC(field)                                                      \
+  do {                                                                          \
+    if (thread && thread->collectSearchStats)                                    \
+      ++thread->searchStats.field;                                               \
+  } while (false)
+#define DB_STAT_ADD(field, value)                                                \
+  do {                                                                          \
+    if (thread && thread->collectSearchStats)                                    \
+      thread->searchStats.field += static_cast<uint64_t>(value);                 \
+  } while (false)
+#define DB_RFP_DEPTH(field, searchDepth)                                         \
+  do {                                                                          \
+    if (thread && thread->collectSearchStats) {                                  \
+      const int bucket = std::clamp((searchDepth), 0,                            \
+                                    SearchStats::DepthBuckets - 1);              \
+      ++thread->searchStats.field[bucket];                                       \
+    }                                                                           \
+  } while (false)
+#else
+#define DB_STAT_INC(field) do {} while (false)
+#define DB_STAT_ADD(field, value) do { (void)sizeof(value); } while (false)
+#define DB_RFP_DEPTH(field, searchDepth) do { (void)sizeof(searchDepth); } while (false)
+#endif
+
 namespace Search {
 
 namespace Tune {
@@ -34,9 +59,9 @@ int RazorMarginMult = 244;
 
 // NMP
 int NmpBase = 3;
-int NmpDivisor = 4;
-int NmpEvalMarginDepth = 0;
-int NmpEvalMarginBase = 0;
+int NmpDivisor = 3;
+int NmpEvalMarginDepth = 8;
+int NmpEvalMarginBase = 140;
 int NmpDepthLimit = 3;
 
 // ProbCut
@@ -45,8 +70,8 @@ int ProbCutBetaImp = 61;
 int ProbCutDepthLimit = 4;
 
 // Aspiration Windows
-int AspWindowBase = 25;
-int AspWindowThreadMult = 9;
+int AspWindowBase = 10;
+int AspWindowThreadMult = 6;
 
 // ==========================================
 // Batch 2 - Reductions, History & Extensions (22 param)
@@ -82,7 +107,7 @@ int TripleExtMargin = 96;
 // SEE
 int SeeQsearchCapture = -60;
 int SeePruningDepthBase = -121;
-int SeePruningQuietBase = -79;
+int SeePruningQuietBase = -60;
 
 // Misc
 int IirDepthLimit = 5;
@@ -123,6 +148,29 @@ inline int futilityMargin(int depth, bool improving) {
   return std::max(margin, 0); // Avoid negative margins
 }
 
+int rfpDepthLimit(bool zugzwangSensitive) {
+  // Static evaluation is less reliable in low-material endings, where a
+  // tempo can decide whether a winning pawn break is available. Keep the
+  // tuned limit in normal positions, but only allow depths 1..4 in endings
+  // already classified as zugzwang-sensitive by the engine.
+  constexpr int ZugzwangSensitiveLimit = 5;
+  return zugzwangSensitive
+             ? std::min(Search::Tune::RfpDepthLimit, ZugzwangSensitiveLimit)
+             : Search::Tune::RfpDepthLimit;
+}
+
+bool rfpTtMoveAllowsCutoff(Move ttMove, bool ttCapture) {
+  // A quiet TT move is positional evidence that static evaluation alone may
+  // not represent the node. Capturing TT moves remain compatible with RFP.
+  return moveIsNone(ttMove) || ttCapture;
+}
+
+int rfpReturnValue(int eval, int beta) {
+  // Do not expose the full (potentially optimistic) static evaluation as a
+  // searched bound. Bias toward beta while preserving a fail-high result.
+  return (2 * beta + eval) / 3;
+}
+
 // Move count pruning threshold (tuned modern quadratic formula)
 inline int futilityMoveCount(bool improving, int depth) {
   return (Search::Tune::FutilityMoveCountBase + depth * depth) / (2 - improving);
@@ -131,6 +179,17 @@ inline int futilityMoveCount(bool improving, int depth) {
 // Draw score
 inline int drawScore(uint64_t nodes) {
   return int(2 * (nodes & 1) - 1); // -1 or +1
+}
+
+std::string uciScore(int score) {
+  if (score >= MATE_IN_MAX || score <= -MATE_IN_MAX) {
+    const int mateDistance = MATE_SCORE - std::abs(score);
+    int mateMoves = std::max(1, (mateDistance + 1) / 2);
+    if (score < 0)
+      mateMoves = -mateMoves;
+    return "score mate " + std::to_string(mateMoves);
+  }
+  return "score cp " + std::to_string(score);
 }
 
 } // namespace Search
@@ -177,20 +236,21 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
   if (ply > selDepth)
     selDepth = ply;
 
-  if (ply > 0 && isDraw(ply)) {
+  const bool isInCheck = inCheck(white_to_move);
+
+  if (ply > 0 && isDraw(ply, isInCheck)) {
     return Search::drawScore(static_cast<uint64_t>(nodes));
   }
 
-  bool isInCheck = inCheck(white_to_move);
-
   // TT Probe in qsearch
   TT.prefetch(hash);
-  bool ttHit = false;
-  TTEntry *tte = TT.probe(hash, ttHit);
+  TTProbe ttProbe = TT.probe(hash);
+  bool ttHit = ttProbe.found;
+  const TTData& ttData = ttProbe.data;
   Move qsTTMove = MOVE_NONE;
   if (ttHit) {
-    int ttScore = static_cast<int>(tte->value16);
-    TTFlag ttFlag = tte->flag();
+    int ttScore = static_cast<int>(ttData.value);
+    TTFlag ttFlag = ttData.flag();
     // Adjust mate scores from TT relative to current ply
     if (ttScore >= MATE_IN_MAX)
       ttScore -= ply;
@@ -205,8 +265,8 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
       return ttScore;
 
     // Extract TT move for MovePicker ordering
-    if (tte->move16 != 0) {
-      qsTTMove.data = tte->move16;
+    if (!moveIsNone(ttData.move)) {
+      qsTTMove = ttData.move;
     }
   }
 
@@ -215,8 +275,8 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
   // search adjustments and must not be persisted as the static evaluation.
   int stand;
   int16_t rawEval = EVAL_NONE;
-  if (ttHit && tte->eval16 != EVAL_NONE) {
-    rawEval = tte->eval16;
+  if (ttHit && ttData.eval != EVAL_NONE) {
+    rawEval = ttData.eval;
     stand = static_cast<int>(rawEval);
   } else {
     stand = evaluate();
@@ -241,10 +301,9 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
   int best = stand;
   Move bestMove = MOVE_NONE;
 
-  // Qsearch entries use logical depth zero (represented internally as depth
-  // one by TTEntry::save()). Never let such an entry replace a deeper main
-  // search result for the same key: this TT has no separate qsearch marker.
-  const bool mayStoreQsearch = !ttHit || tte->depth() <= 1;
+  // Qsearch has its own logical depth. It may refresh another qsearch entry,
+  // but must never replace an entry produced by the regular search.
+  const bool mayStoreQsearch = !ttHit || ttData.depth() <= TT_DEPTH_QS;
   auto saveQsearch = [&](int score, TTFlag flag) {
     if (!mayStoreQsearch || stopSearching)
       return;
@@ -256,8 +315,8 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
       storeScore -= ply;
 
     const uint16_t packedMove = moveIsNone(bestMove) ? 0 : bestMove.data;
-    tte->save(hash, static_cast<int16_t>(storeScore), false, flag, 0,
-              packedMove, rawEval, TT.generation());
+    ttProbe.writer.save(hash, static_cast<int16_t>(storeScore), false, flag,
+                        TT_DEPTH_QS, packedMove, rawEval, TT.generation());
   };
 
   if (!isInCheck) {
@@ -288,8 +347,8 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
     // Horizon Effect where defensive captures (e.g., Bishop capturing a Knight,
     // SEE = -10) were pruned, causing the engine to hallucinate lost positions
     // and lag.
-    if (!isInCheck && !isCapture)
-      continue; // skip non-captures outside check
+    if (!isInCheck && !isCapture && !isPromotion)
+      continue; // skip non-tactical moves outside check
     if (!isInCheck && !SEE(m, Search::Tune::SeeQsearchCapture))
       continue;
 
@@ -371,9 +430,11 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
   if (depth <= 0)
     return qsearch(alpha, beta, ss);
 
+  const bool isInCheck = inCheck(white_to_move);
+
   if (!rootNode) {
     // Draw detection
-    if (isDraw(ply)) {
+    if (isDraw(ply, isInCheck)) {
       return Search::drawScore(static_cast<uint64_t>(nodes));
     }
 
@@ -393,8 +454,6 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     }
   }
 
-  bool isInCheck = inCheck(white_to_move);
-
   // Check extensions are assigned selectively in the main move loop after
   // the child position is available and givesCheck can be computed exactly.
 
@@ -406,8 +465,9 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
 
   // ============ TT Probe ============
   TT.prefetch(hash);
-  bool ttHit = false;
-  TTEntry *tte = TT.probe(hash, ttHit);
+  TTProbe ttProbe = TT.probe(hash);
+  bool ttHit = ttProbe.found;
+  const TTData& ttData = ttProbe.data;
   Move ttMove = MOVE_NONE;
   int ttScore = -INF_SCORE;
   int ttDepth = -1;
@@ -420,7 +480,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     // The MoveType is preserved intact in the 16 bits, so moveTypeOf()
     // and moveIsCapture() already return the correct flags — nothing to
     // reconstruct from the board.
-    ttMove.data = tte->move16;
+    ttMove = ttData.move;
 
     // Anti-Collision Check: If the move is physically impossible,
     // this TT entry belongs to a DIFFERENT position with the same hash!
@@ -432,15 +492,15 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     }
 
     if (ttHit) {
-      ttDepth = tte->depth();
-      ttScore = static_cast<int>(tte->value16);
+      ttDepth = ttData.depth();
+      ttScore = static_cast<int>(ttData.value);
       // Adjust mate scores from TT relative to current ply
       if (ttScore >= MATE_IN_MAX)
         ttScore -= ply;
       if (ttScore <= -MATE_IN_MAX)
         ttScore += ply;
-      ttFlag = tte->flag();
-      ttEval = tte->eval16;
+      ttFlag = ttData.flag();
+      ttEval = ttData.eval;
 
       // Track if TT move is a capture
       if (!moveIsNone(ttMove)) {
@@ -501,6 +561,13 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     staticEval = eval;
   }
 
+  // Keep one NMP gate independent from correction history and TT bounds.
+  // rawEval is the unadjusted NNUE/static value saved in the TT. Only the
+  // objective 50-move-rule damping is shared with the search score.
+  int nmpStaticEval = static_cast<int>(rawEval);
+  if (halfmove >= 70 && std::abs(nmpStaticEval) < MATE_IN_MAX)
+    nmpStaticEval = (nmpStaticEval * (100 - halfmove)) / 30;
+
   // Store static eval in search stack for improving detection
   ss->staticEval = staticEval;
 
@@ -524,23 +591,46 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     int razorMargin = Search::Tune::RazorMarginBase +
                       Search::Tune::RazorMarginMult * depth * depth;
     if (eval < alpha - razorMargin) {
+      DB_STAT_INC(razorCuts);
       return qsearch(alpha, beta, ss);
     }
   }
 
   // ============ Reverse Futility Pruning (Static Null Move) ============
-  // Prune branches where static eval minus futility margin still exceeds beta
-  if (!pvNode && !isInCheck && depth < Search::Tune::RfpDepthLimit &&
-      eval - Search::futilityMargin(depth, improving) >= beta) {
-    return eval;
+  // Prune branches where static eval minus futility margin still exceeds beta.
+  // In low-material endings, restrict RFP to shallow nodes because a single
+  // quiet tempo can invalidate the static bound. A quiet TT move is likewise
+  // searched instead of being discarded by the static evaluation.
+  if (!pvNode && !isInCheck && depth < Search::Tune::RfpDepthLimit) {
+    DB_STAT_INC(rfpCandidates);
+    DB_RFP_DEPTH(rfpCandidatesByDepth, depth);
+
+    if (!Search::rfpTtMoveAllowsCutoff(ttMove, ttCapture)) {
+      DB_STAT_INC(rfpVetoTtQuiet);
+    } else if (std::abs(beta) >= MATE_IN_MAX || std::abs(eval) >= MATE_IN_MAX) {
+      DB_STAT_INC(rfpVetoMate);
+    } else if (eval - Search::futilityMargin(depth, improving) >= beta) {
+      const bool zugzwangSensitive = depth >= 5 && isZugzwangEndgame();
+      if (depth >= Search::rfpDepthLimit(zugzwangSensitive)) {
+        DB_STAT_INC(rfpVetoEndgame);
+      } else {
+        DB_STAT_INC(rfpCuts);
+        DB_RFP_DEPTH(rfpCutsByDepth, depth);
+        return Search::rfpReturnValue(eval, beta);
+      }
+    }
   }
+
+  int nmpMargin = std::max(20, Search::Tune::NmpEvalMarginBase - Search::Tune::NmpEvalMarginDepth * depth);
 
   if (!pvNode && !isInCheck && depth >= Search::Tune::NmpDepthLimit &&
       ply > 0 &&
-      staticEval >= beta &&
+      eval >= beta &&
+      nmpStaticEval >= beta + nmpMargin &&
       hasNonPawnMaterial(white_to_move) && !isZugzwangEndgame() && moveIsNone(excludedMove) &&
       !moveIsNone((ss - 1)->currentMove) &&
       (ply >= thread->nmpMinPly || sideToMove() != thread->nmpColor)) {
+    DB_STAT_INC(nmpAttempts);
     ss->currentMove = MOVE_NONE; // No real move — prevents stale counter-move
                                  // lookup in children
     ss->movedPiece = EMPTY;
@@ -548,7 +638,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
 
     // ============ Adaptive Null Move Pruning ============
     int R = Search::Tune::NmpBase + depth / Search::Tune::NmpDivisor +
-            std::min((staticEval - beta) / 200, 3);
+            std::min((eval - beta) / 150, 3);
 
     int nmScore = -pvs(depth - R, -beta, -beta + 1, ss + 1, !cutNode);
     (ss + 1)->pvLength = 0; // Prevent PV leak from null move branch
@@ -559,22 +649,27 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     if (nmScore >= beta && std::abs(nmScore) < MATE_IN_MAX) {
 
       // At low depths or clear wins, accept directly
-      if (thread->nmpMinPly || depth < 14)
+      if (thread->nmpMinPly || depth < 14) {
+        DB_STAT_INC(nmpCuts);
         return nmScore;
+      }
 
       // Verification search at high depths (depth >= 14):
       // Re-search with null move disabled for our side to avoid
       // false cutoffs in zugzwang positions (~20 Elo).
       thread->nmpMinPly = ply + 3 * (depth - R) / 4;
       thread->nmpColor = sideToMove();
+      DB_STAT_INC(nmpVerifications);
 
       int vScore = pvs(depth - R, beta - 1, beta, ss, false);
       thread->nmpMinPly = 0;
       ss->pvLength = 0; // Prevent PV corruption from NMP verification
 
       if (vScore >= beta) {
+        DB_STAT_INC(nmpCuts);
         return nmScore;
       }
+      DB_STAT_INC(nmpVerificationFails);
       ss->pvLength = 0; // Prevent leak if verification fails and loop continues
     }
   }
@@ -601,6 +696,13 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
 
     for (Move m = pcPicker.next(); !moveIsNone(m) && probCutCount < 3;
          m = pcPicker.next()) {
+      DB_STAT_INC(probCutAttempts);
+      const Move savedCurrentMove = ss->currentMove;
+      const int savedMovedPiece = ss->movedPiece;
+      const int probCutMovedPiece = piece_board[moveFrom(m)];
+      ss->currentMove = m;
+      ss->movedPiece = probCutMovedPiece;
+
       makeMove(m);
       probCutCount++;
 
@@ -612,8 +714,11 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
         val = -pvs(depth - 4, -raisedBeta, -raisedBeta + 1, ss + 1, !cutNode);
 
       undoMove(m);
+      ss->currentMove = savedCurrentMove;
+      ss->movedPiece = savedMovedPiece;
 
       if (val >= raisedBeta) {
+        DB_STAT_INC(probCutCuts);
         (ss + 1)->pvLength = 0; // Prevent PV corruption from ProbCut
         // Prevent returning unproven mates from reduced depth search
         return std::abs(val) < MATE_IN_MAX ? val : raisedBeta;
@@ -710,18 +815,26 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     // ============ Pre-move pruning (SEE-based, BEFORE makeMove) ============
     // These checks avoid the cost of makeMove/undoMove for moves that will be
     // pruned.
+    bool quietSeeFails = false;
     if (!rootNode && best > -MATE_IN_MAX) {
       // SEE pruning for captures at low depths
       if (depth <= 3 && isCapture && !isPromotion) {
-        if (!SEE(m, Search::Tune::SeePruningDepthBase * depth))
+        if (!SEE(m, Search::Tune::SeePruningDepthBase * depth)) {
+          DB_STAT_INC(seeCaptureCuts);
+          // The move is legal even though it was selectively pruned. Keep
+          // checkmate/stalemate detection independent of pruning decisions.
+          hasLegalMove = true;
           continue;
+        }
       }
 
-      // SEE pruning for quiet moves (S2)
-      if (!pvNode && depth <= 3 && !isCapture && !isPromotion && !isInCheck) {
+      // A quiet sacrifice can give check. SEE is evaluated while the parent
+      // position is available, but its result is acted on only after the
+      // child tells us whether the move gives check.
+      if (!pvNode && depth <= 3 && !isCapture && !isPromotion && !isInCheck &&
+          m != k0 && m != k1 && m != counterMove) {
         int seeThreshold = Search::Tune::SeePruningQuietBase * depth;
-        if (!SEE(m, seeThreshold))
-          continue;
+        quietSeeFails = !SEE(m, seeThreshold);
       }
     }
 
@@ -735,6 +848,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
                                    ? (white_to_move ? BPAWN : WPAWN)
                                    : piece_board[moveTo(m)];
     int us = white_to_move ? WHITE : BLACK;
+    const int parentPawnHistoryIndex = static_cast<int>(pawnKey & 8191);
     ss->movedPiece = currentMovedPiece; // store mover so children read correct
                                         // cont-history piece
 
@@ -752,6 +866,16 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     // LMR
     bool givesCheck = inCheck(white_to_move);
 
+    // Checks are explicitly exempt from quiet SEE pruning. Undoing is needed
+    // because SEE itself must inspect the parent position; no child search or
+    // history update has occurred yet.
+    if (quietSeeFails && !givesCheck) {
+      DB_STAT_INC(seeQuietCuts);
+      undoMove(m);
+      hasLegalMove = true;
+      continue;
+    }
+
     hasLegalMove = true;
     moveCount++;
 
@@ -760,6 +884,17 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     // alive indefinitely, and singular extensions retain precedence.
     if (pvNode && givesCheck && depth >= 3 && extension == 0)
       extension = 1;
+
+    if (extension > 0) {
+      if (singularLMR)
+        DB_STAT_INC(singularExtensions);
+      else if (givesCheck)
+        DB_STAT_INC(checkExtensions);
+      if (extension >= 2)
+        DB_STAT_INC(doubleExtensions);
+      if (extension >= 3)
+        DB_STAT_INC(tripleExtensions);
+    }
 
     newDepth += extension;
     // Clamp only against negative extensions (cutNode -2) driving newDepth
@@ -777,6 +912,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
       // Late Move Pruning / Move Count Pruning
       if (depth <= 8 && !isCapture && !isPromotion && !isInCheck && !givesCheck) {
         if (moveCount > Search::futilityMoveCount(improving, depth)) {
+          DB_STAT_INC(lmpTriggers);
           picker.skipQuiets();
         }
       }
@@ -787,6 +923,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
         int futilityValue = eval + Search::Tune::FutilityChildBase +
                             Search::Tune::FutilityChildMult * depth;
         if (futilityValue <= alpha) {
+          DB_STAT_INC(futilityCuts);
           undoMove(m);
           if (futilityValue > best)
             best = futilityValue;
@@ -801,7 +938,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
         int movedPiece = currentMovedPiece;
         int to_sq = moveTo(m);
         if (movedPiece != EMPTY && movedPiece < PIECE_NB) {
-          hpScore += thread->pawnHistory[pawnKey & 8191][movedPiece][to_sq];
+          hpScore += thread->pawnHistory[parentPawnHistoryIndex][movedPiece][to_sq];
           int plies_back[4] = {1, 2, 4, 6};
           for (int l = 0; l < 4; ++l) {
             int pb = plies_back[l];
@@ -817,6 +954,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
           }
         }
         if (hpScore < -Search::Tune::HistoryPruningMargin * depth) {
+          DB_STAT_INC(historyCuts);
           undoMove(m);
           continue;
         }
@@ -825,6 +963,10 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
 
     int sc;
     (ss + 1)->pvLength = 0;
+#ifdef ENABLE_SEARCH_STATS
+    const uint64_t extensionNodesBefore =
+        extension > 0 ? nodes.load(std::memory_order_relaxed) : 0;
+#endif
 
     if (moveCount == 1) {
       // First move - full window search for PV, non-PV propagates !cutNode
@@ -879,7 +1021,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
           int movedPiece = currentMovedPiece;
           int to_sq = moveTo(m);
           if (movedPiece != EMPTY && movedPiece < PIECE_NB) {
-            histScore += thread->pawnHistory[pawnKey & 8191][movedPiece][to_sq];
+            histScore += thread->pawnHistory[parentPawnHistoryIndex][movedPiece][to_sq];
             int plies_back[4] = {1, 2, 4, 6};
             for (int l = 0; l < 4; ++l) {
               int pb = plies_back[l];
@@ -929,6 +1071,16 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
 
       // Reduced depth search (null window)
       if (R > 0) {
+        DB_STAT_INC(lmrReductions);
+#ifdef ENABLE_SEARCH_STATS
+        if (thread && thread->collectSearchStats) {
+          const int depthBand = depth <= 3 ? 0 : depth <= 6 ? 1
+                                                   : depth <= 10 ? 2 : 3;
+          const int reductionBand = std::min(R, 4) - 1;
+          ++thread->searchStats.lmrReductionsByDepth[depthBand];
+          ++thread->searchStats.lmrReductionsByAmount[reductionBand];
+        }
+#endif
         sc = -pvs(newDepth - R, -alpha - 1, -alpha, ss + 1, true);
       } else {
         sc = alpha + 1; // Force re-search
@@ -936,6 +1088,10 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
 
       // Re-search at full depth if LMR failed high
       if (sc > alpha) {
+        if (R > 0) {
+          DB_STAT_INC(lmrFailHighs);
+          DB_STAT_INC(lmrResearches);
+        }
         sc = -pvs(newDepth, -alpha - 1, -alpha, ss + 1, !cutNode);
 
         // Full window re-search for PV nodes
@@ -944,6 +1100,14 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
         }
       }
     }
+
+#ifdef ENABLE_SEARCH_STATS
+    if (extension > 0 && thread && thread->collectSearchStats) {
+      const uint64_t extensionNodesAfter = nodes.load(std::memory_order_relaxed);
+      thread->searchStats.extensionNodes +=
+          extensionNodesAfter - extensionNodesBefore;
+    }
+#endif
 
     undoMove(m);
 
@@ -1002,7 +1166,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
         }
 
         // Update history for quiet moves that improve alpha (gravity formula)
-        if (!isCapture) {
+        if (!isCapture && !isPromotion) {
           int side = us;
           int bonus = std::min(depth * depth, Search::Tune::HistoryBonusMax);
           int &entry = thread->history_heur[side][moveFrom(m)][moveTo(m)];
@@ -1013,7 +1177,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
           if (movedPiece != EMPTY && movedPiece < PIECE_NB) {
             // Pawn History
             int16_t &pEntry =
-                thread->pawnHistory[pawnKey & 8191][movedPiece][moveTo(m)];
+                thread->pawnHistory[parentPawnHistoryIndex][movedPiece][moveTo(m)];
             int pv = static_cast<int>(pEntry);
             pv += bonus - pv * std::abs(bonus) / Search::Tune::HistoryDivisor;
             pEntry = static_cast<int16_t>(std::clamp(pv, -16384, 16384));
@@ -1060,7 +1224,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
           int side = us;
           int bonus = std::min(depth * depth, Search::Tune::HistoryBonusMax);
 
-          if (!isCapture) {
+          if (!isCapture && !isPromotion) {
             // Update killers
             if (thread->killers.killer[0][ply] == MOVE_NONE ||
                 !(thread->killers.killer[0][ply] == m)) {
@@ -1088,7 +1252,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
                 if (qMovedPiece != EMPTY && qMovedPiece < PIECE_NB) {
                   // Pawn History
                   int16_t &pEntry =
-                      thread->pawnHistory[pawnKey & 8191][qMovedPiece][qTo];
+                      thread->pawnHistory[parentPawnHistoryIndex][qMovedPiece][qTo];
                   int pv = static_cast<int>(pEntry);
                   pv += -malus - pv * malus / Search::Tune::HistoryDivisor;
                   pEntry = static_cast<int16_t>(std::clamp(pv, -16384, 16384));
@@ -1164,7 +1328,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
   // The save() function preserves the old move when mv==0.
   // Skip storing during singular extension searches (excludedMove set)
   // to avoid corrupting parent search's TT entry.
-  // Uses the TTEntry pointer from the initial probe to avoid double-probing.
+  // Uses the writer from the initial probe to avoid double-probing.
   if (moveIsNone(excludedMove)) {
     if (!isInCheck && depth >= 2 && std::abs(best) < MATE_IN_MAX &&
         rawEval != EVAL_NONE) {
@@ -1207,8 +1371,8 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
 
     uint16_t packedMove = moveIsNone(bestMove) ? 0 : bestMove.data;
 
-    tte->save(hash, static_cast<int16_t>(storeScore), pvNode, flag, depth,
-              packedMove, rawEval, TT.generation());
+    ttProbe.writer.save(hash, static_cast<int16_t>(storeScore), pvNode, flag,
+                        depth, packedMove, rawEval, TT.generation());
   }
 
   return best;
@@ -1237,13 +1401,6 @@ Move Position::search(int maxDepth, int timeMs) {
   // Do NOT call it again here — doing so double-increments generation8,
   // making recent TT entries appear older and accelerating their eviction.
 
-  // Age per-thread history tables to prevent score saturation over long games.
-  // Done here (inside each worker) so all threads age in parallel,
-  // instead of sequentially in startThinking() which blocked search startup.
-  // Heuristics are fully reset on ucinewgame via Threads.clear().
-  if (thread)
-    thread->ageHistory();
-
   // Initialize search stack for improving detection
   SearchStack stack[MAX_PLY + 7] = {};
   SearchStack *ss = stack + 7;
@@ -1268,12 +1425,56 @@ Move Position::search(int maxDepth, int timeMs) {
     // Generate legal moves
     numLegalMoves = generateLegal(legalMoves);
 
+    // Emergency clock path. At a 1 ms hard allocation even a nominal depth-1
+    // search cannot be guaranteed to finish and leave time for UCI delivery.
+    // Prefer a legal TT move when available, otherwise return the first legal
+    // move. Surviving on the clock is the only meaningful objective here.
+    if (time_limit_ms > 0 && TimeMgr.maximum() <= 1 && numLegalMoves > 0) {
+      Move emergencyMove = legalMoves[0];
+      const TTProbe emergencyProbe = TT.probe(hash);
+      if (emergencyProbe.found && !moveIsNone(emergencyProbe.data.move)) {
+        const Move storedMove = emergencyProbe.data.move;
+        for (int i = 0; i < numLegalMoves; ++i) {
+          if (sameMoveIdentity(legalMoves[i], storedMove)) {
+            emergencyMove = legalMoves[i];
+            break;
+          }
+        }
+      }
+
+      rootPV.assign(1, emergencyMove);
+      if (thread) {
+        thread->bestMove = emergencyMove;
+        thread->bestScore = 0;
+        thread->completedDepth = 1;
+        thread->completedPV = rootPV;
+        thread->hasCompletedIteration = true;
+      }
+      return emergencyMove;
+    }
+
     // Only one legal move - play it immediately after minimal search
     if (numLegalMoves == 1) {
       selDepth = 1;
-      makeMove(legalMoves[0]);
-      int score = -qsearch(-INF_SCORE, INF_SCORE, ss + 1);
-      undoMove(legalMoves[0]);
+      const Move onlyMove = legalMoves[0];
+      const int onlyMovedPiece = piece_board[moveFrom(onlyMove)];
+
+      // SearchStack stores the move on the parent entry. Initialize the child
+      // completely so ply-dependent draw and mate scores match the main path.
+      ss->currentMove = onlyMove;
+      ss->movedPiece = onlyMovedPiece;
+      SearchStack* child = ss + 1;
+      child->ply = 1;
+      child->pvLength = 0;
+      child->staticEval = -INF_SCORE;
+      child->currentMove = MOVE_NONE;
+      child->excludedMove = MOVE_NONE;
+      child->movedPiece = EMPTY;
+      child->doubleExtensions = 0;
+
+      makeMove(onlyMove);
+      int score = -qsearch(-INF_SCORE, INF_SCORE, child);
+      undoMove(onlyMove);
       nodes++;
 
       auto now_time = std::chrono::high_resolution_clock::now();
@@ -1283,18 +1484,19 @@ Move Position::search(int maxDepth, int timeMs) {
       if (ms == 0)
         ms = 1;
 
-      std::cout << "info depth 1 seldepth 1 score cp " << score << " time "
+      std::cout << "info depth 1 seldepth " << selDepth << " "
+                << Search::uciScore(score) << " time "
                 << ms << " nodes " << nodes << " nps " << (nodes * 1000 / ms)
-                << " pv " << moveToUCI(legalMoves[0]) << std::endl;
+                << " pv " << moveToUCI(onlyMove) << std::endl;
 
       if (thread) {
-        thread->bestMove = legalMoves[0];
+        thread->bestMove = onlyMove;
         thread->bestScore = score;
         thread->completedDepth = 1;
-        thread->completedPV.assign(1, legalMoves[0]);
+        thread->completedPV.assign(1, onlyMove);
         thread->hasCompletedIteration = true;
       }
-      return legalMoves[0];
+      return onlyMove;
     }
 
   } else {
@@ -1378,6 +1580,11 @@ Move Position::search(int maxDepth, int timeMs) {
     }
 
     while (true) {
+#ifdef ENABLE_SEARCH_STATS
+      const uint64_t aspirationNodesBefore =
+          nodes.load(std::memory_order_relaxed);
+#endif
+      DB_STAT_INC(aspirationAttempts);
       int score = pvs(d, alpha, beta, ss, false);
 
       // If the search aborted due to stop/time-up inside deep recursion,
@@ -1386,13 +1593,29 @@ Move Position::search(int maxDepth, int timeMs) {
         break;
 
       if (score <= alpha) {
-        // Fail-low: widen window downward
+        DB_STAT_INC(aspirationFailLow);
+        DB_STAT_INC(aspirationResearches);
+#ifdef ENABLE_SEARCH_STATS
+        if (thread && thread->collectSearchStats)
+          thread->searchStats.aspirationDiscardedNodes +=
+              nodes.load(std::memory_order_relaxed) - aspirationNodesBefore;
+#endif
+        // Fail-low: contract beta to mid-point and widen alpha downward
+        beta = (alpha + beta) / 2;
         alpha = std::max(score - delta, -INF_SCORE);
         delta += delta / 2;
         continue;
       }
       if (score >= beta) {
-        // Fail-high: widen window upward
+        DB_STAT_INC(aspirationFailHigh);
+        DB_STAT_INC(aspirationResearches);
+#ifdef ENABLE_SEARCH_STATS
+        if (thread && thread->collectSearchStats)
+          thread->searchStats.aspirationDiscardedNodes +=
+              nodes.load(std::memory_order_relaxed) - aspirationNodesBefore;
+#endif
+        // Fail-high: contract alpha to safe boundary and widen beta upward
+        alpha = std::max(beta - delta, alpha);
         beta = std::min(score + delta, INF_SCORE);
         delta += delta / 2;
         continue;
@@ -1423,15 +1646,12 @@ Move Position::search(int maxDepth, int timeMs) {
       }
       // Fallback to TT only if rootBestMove was not set
       if (best == MOVE_NONE) {
-        bool ttFound = false;
-        TTEntry *tte = TT.probe(hash, ttFound);
-        if (ttFound) {
-          Move ttBest;
-          ttBest.data = tte->move16;
+        const TTProbe rootProbe = TT.probe(hash);
+        if (rootProbe.found) {
+          Move ttBest = rootProbe.data.move;
           bool isLegalMove = false;
           for (int i = 0; i < numLegalMoves; i++) {
-            // Match by from+to squares
-            if ((legalMoves[i].data & 0x0FFF) == (ttBest.data & 0x0FFF)) {
+            if (sameMoveIdentity(legalMoves[i], ttBest)) {
               isLegalMove = true;
               ttBest = legalMoves[i]; // use generated move with correct flags
               break;
@@ -1468,16 +1688,7 @@ Move Position::search(int maxDepth, int timeMs) {
 
         std::cout << "info depth " << d << " seldepth " << selDepth;
 
-        // Mate score formatting
-        if (score >= MATE_IN_MAX || score <= -MATE_IN_MAX) {
-          int mateDistance = MATE_SCORE - (score > 0 ? score : -score);
-          int mateMoves = std::max(1, (mateDistance + 1) / 2);
-          if (score < 0)
-            mateMoves = -mateMoves;
-          std::cout << " score mate " << mateMoves;
-        } else {
-          std::cout << " score cp " << score;
-        }
+        std::cout << " " << Search::uciScore(score);
 
         std::cout << " time " << ms << " nodes " << totalNodes << " nps " << nps
                   << " hashfull " << TT.hashfull();
@@ -1519,6 +1730,15 @@ Move Position::search(int maxDepth, int timeMs) {
     // ================================================================
     // ================================================================
     if (isMainThread && !stopSearching) {
+
+      // A physical clock limit is always stronger than the preferred minimum
+      // depth. The completed iteration above is already safe to publish.
+      if (time_limit_ms > 0 &&
+          !Threads.ponder.load(std::memory_order_relaxed) &&
+          TimeMgr.elapsed() >= TimeMgr.maximum()) {
+        Threads.stop.store(true, std::memory_order_relaxed);
+        break;
+      }
 
       // Aggregate bestMoveChanges from all threads
       for (size_t t = 0; t < Threads.size(); t++) {
@@ -1656,25 +1876,26 @@ std::string Position::pvToString(const std::vector<Move> &pv) {
   Position temp = *this; // Create a copy of the root position
 
   for (auto &m : pv) {
-    // Validate legality before printing
-    bool isLegalMove = false;
+    if (moveIsNone(m))
+      break;
+
     Move legalMoves[MAX_MOVES];
     int numLegalMoves = temp.generateLegal(legalMoves);
+    Move matchedMove = MOVE_NONE;
 
     for (int i = 0; i < numLegalMoves; i++) {
-      if (legalMoves[i] == m) {
-        isLegalMove = true;
+      if (sameMoveIdentity(legalMoves[i], m)) {
+        matchedMove = legalMoves[i];
         break;
       }
     }
 
-    // If the move is illegal (e.g. from TT collisions deep in search),
-    // truncate the PV to prevent cutechess warnings.
-    if (!isLegalMove)
+    // If the move is not legal, truncate the PV
+    if (moveIsNone(matchedMove))
       break;
 
-    ss << temp.moveToUCI(m) << " ";
-    temp.makeMove(m);
+    ss << temp.moveToUCI(matchedMove) << " ";
+    temp.makeMove(matchedMove); // execute with canonical legal flags (castling, ep, etc.)
   }
 
   std::string result = ss.str();

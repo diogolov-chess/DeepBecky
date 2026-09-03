@@ -126,6 +126,19 @@ inline int movePromotionType(const Move& m) {
     if (!moveIsPromotion(m)) return 0;
     return (moveTypeOf(m) & 3) + 2; 
 }
+// movePromotionType() returns a color-independent piece type encoded with the
+// white piece constants (WKNIGHT..WQUEEN), regardless of the side to move.
+inline bool isValidPromotionType(int promotionType) {
+    return promotionType >= WKNIGHT && promotionType <= WQUEEN;
+}
+// Compare the stable identity of two moves. Positional flags such as capture
+// and double-push can be reconstructed, but a promotion piece is part of the
+// move identity and must never be discarded.
+inline bool sameMoveIdentity(const Move& lhs, const Move& rhs) {
+    return moveFrom(lhs) == moveFrom(rhs)
+        && moveTo(lhs) == moveTo(rhs)
+        && movePromotionType(lhs) == movePromotionType(rhs);
+}
 inline bool moveIsNone(const Move& m) { return m.data == 0; }
 
 inline Move makeMove(int from, int to, MoveType type = MOVE_TYPE_QUIET) {

@@ -11,7 +11,6 @@
 #include <unordered_map>
 
 // Forward declarations
-struct TTEntry;
 struct SearchStack;
 struct SearchThread;
 
@@ -191,10 +190,10 @@ struct Threats {
     bool timeUp() const;
 
     // Draw Detection
-    bool isFiftyMoveDraw() const;
+    bool isFiftyMoveDraw(bool isInCheck);
     bool isThreefoldRepetition(int ply) const;
     bool isInsufficientMaterial() const;
-    bool isDraw(int ply);
+    bool isDraw(int ply, bool isInCheck);
 
     // Bitboard Query Helpers
     Color sideToMove() const { return white_to_move ? WHITE : BLACK; }
