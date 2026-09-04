@@ -113,7 +113,8 @@ public:
 
     // Search parameters (set by cmdGo before waking main thread)
     int searchMaxDepth = 64;
-    int searchTimeMs = 0;
+    // Updated by ponderhit while the search is active.
+    std::atomic<int> searchTimeMs{0};
 
     // Ponder support
     std::atomic<bool> ponder{false};   // Currently in ponder mode (don't print bestmove)
@@ -128,6 +129,8 @@ public:
     void set(size_t num);
     void clear();
     void waitForSearchFinished();
+    void stopAndWait();
+    void ponderHit();
 
     // Setup all threads with root position, then start main thread
     void startThinking(Position& rootPos, int maxDepth, int timeMs, bool ponderMode = false);

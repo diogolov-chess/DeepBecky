@@ -125,7 +125,10 @@ void cmdUci() {
 }
 
 void cmdIsReady() {
-  Threads.waitForSearchFinished();
+  // Preserve the historical depth-search barrier used by the PGO workload,
+  // but never block forever on an active ponder search.
+  if (!Threads.ponder.load(std::memory_order_acquire))
+    Threads.waitForSearchFinished();
   std::cout << "readyok" << std::endl;
   std::cout.flush();
 }
@@ -262,7 +265,7 @@ void cmdSetOption(Position &engine, std::istringstream &is) {
 }
 
 void cmdNewGame(Position &engine) {
-  Threads.waitForSearchFinished();
+  Threads.stopAndWait();
   TT.clear();
   TT.newSearch();
   engine.setStartPos();
@@ -270,7 +273,7 @@ void cmdNewGame(Position &engine) {
 }
 
 void cmdPosition(Position &engine, std::istringstream &is) {
-  Threads.waitForSearchFinished();
+  Threads.stopAndWait();
   std::string token;
   is >> token;
   std::string tokenLower = toLower(token);
@@ -328,7 +331,7 @@ void cmdPosition(Position &engine, std::istringstream &is) {
 
 void cmdGo(Position &engine, std::istringstream &is) {
   // Wait for any previous search to finish
-  Threads.waitForSearchFinished();
+  Threads.stopAndWait();
 
   SearchLimits limits;
   limits.startTime = now();
@@ -387,38 +390,11 @@ void cmdGo(Position &engine, std::istringstream &is) {
 }
 
 void cmdStop() {
-  Threads.ponder.store(false, std::memory_order_relaxed);
-  Threads.stop.store(true, std::memory_order_relaxed);
-  // Wake main thread if it's waiting for ponderhit
-  if (Threads.main()) {
-    std::lock_guard<std::mutex> lk(Threads.main()->mtx);
-    Threads.main()->cv.notify_one();
-  }
-  Threads.waitForSearchFinished();
+  Threads.stopAndWait();
 }
 
-void cmdPonderHit(Position &engine) {
-  // Opponent played the expected move - switch from ponder to normal search
-  Threads.ponder.store(false, std::memory_order_relaxed);
-  TimeMgr.restartTimer();
-
-  // Reinitialize time management now that real clock starts
-  // The search will pick up time checking on the next node
-  // We need to set a proper time limit for the main thread
-  if (Threads.main()) {
-    // Set the start time to NOW (pondering time doesn't count)
-    auto now_time = std::chrono::high_resolution_clock::now();
-    Threads.main()->pos.start_time = now_time;
-
-    // Calculate proper time allocation from the limits stored earlier
-    int timeMs = static_cast<int>(TimeMgr.optimum());
-    Threads.main()->pos.time_limit_ms = timeMs;
-    Threads.searchTimeMs = timeMs;
-
-    // Wake main thread if it's waiting for ponderhit after search completed
-    std::lock_guard<std::mutex> lk(Threads.main()->mtx);
-    Threads.main()->cv.notify_one();
-  }
+void cmdPonderHit() {
+  Threads.ponderHit();
 }
 
 void cmdPerft(Position &engine, std::istringstream &is) {
@@ -488,25 +464,23 @@ void loop(Position &engine) {
     } else if (cmdLower == "eval") {
       std::cout << "info string Eval: " << Eval::evaluate(engine) << std::endl;
     } else if (cmdLower == "setoption") {
-      Threads.waitForSearchFinished();
+      Threads.stopAndWait();
       cmdSetOption(engine, is);
     } else if (cmdLower == "ucinewgame") {
       cmdNewGame(engine);
     } else if (cmdLower == "position") {
-      Threads.waitForSearchFinished();
       cmdPosition(engine, is);
     } else if (cmdLower == "go") {
       cmdGo(engine, is);
     } else if (cmdLower == "stop") {
       cmdStop();
     } else if (cmdLower == "ponderhit") {
-      cmdPonderHit(engine);
+      cmdPonderHit();
     } else if (cmdLower == "perft") {
-      Threads.waitForSearchFinished();
+      Threads.stopAndWait();
       cmdPerft(engine, is);
     } else if (cmdLower == "quit") {
-      Threads.stop.store(true, std::memory_order_relaxed);
-      Threads.waitForSearchFinished();
+      Threads.stopAndWait();
       break;
     } else if (cmdLower == "d" || cmdLower == "display") {
       std::cout << "info string Display board not implemented yet" << std::endl;

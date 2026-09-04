@@ -1397,6 +1397,14 @@ Move Position::search(int maxDepth, int timeMs) {
   start_time = std::chrono::high_resolution_clock::now();
   time_limit_ms = timeMs;
 
+  // ponderhit is asynchronous. The per-position limit remains the immutable
+  // value passed at search start; the pool publishes the post-ponder limit.
+  const auto hasActiveTimeLimit = [&]() {
+    return time_limit_ms > 0 ||
+           (isMainThread && thread &&
+            Threads.searchTimeMs.load(std::memory_order_acquire) > 0);
+  };
+
   // TT.newSearch() is called once in ThreadPool::startThinking().
   // Do NOT call it again here — doing so double-increments generation8,
   // making recent TT entries appear older and accelerating their eviction.
@@ -1429,7 +1437,7 @@ Move Position::search(int maxDepth, int timeMs) {
     // search cannot be guaranteed to finish and leave time for UCI delivery.
     // Prefer a legal TT move when available, otherwise return the first legal
     // move. Surviving on the clock is the only meaningful objective here.
-    if (time_limit_ms > 0 && TimeMgr.maximum() <= 1 && numLegalMoves > 0) {
+    if (hasActiveTimeLimit() && TimeMgr.maximum() <= 1 && numLegalMoves > 0) {
       Move emergencyMove = legalMoves[0];
       const TTProbe emergencyProbe = TT.probe(hash);
       if (emergencyProbe.found && !moveIsNone(emergencyProbe.data.move)) {
@@ -1733,7 +1741,7 @@ Move Position::search(int maxDepth, int timeMs) {
 
       // A physical clock limit is always stronger than the preferred minimum
       // depth. The completed iteration above is already safe to publish.
-      if (time_limit_ms > 0 &&
+      if (hasActiveTimeLimit() &&
           !Threads.ponder.load(std::memory_order_relaxed) &&
           TimeMgr.elapsed() >= TimeMgr.maximum()) {
         Threads.stop.store(true, std::memory_order_relaxed);
@@ -1753,7 +1761,7 @@ Move Position::search(int maxDepth, int timeMs) {
       }
 
       // Do we have time for the next iteration? Can we stop searching now?
-      if (time_limit_ms > 0 && !Threads.stop.load(std::memory_order_relaxed)) {
+      if (hasActiveTimeLimit() && !Threads.stop.load(std::memory_order_relaxed)) {
 
         // --- nodesEffort: how many nodes were spent on the best root move ---
         // Find which root move index is the best move

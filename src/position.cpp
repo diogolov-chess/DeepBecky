@@ -703,11 +703,16 @@ bool Position::timeUp() const {
     // Check global stop flag first (set by other threads or UCI stop)
     if (Threads.stop.load(std::memory_order_relaxed)) return true;
     // Never stop on time while pondering (wait for ponderhit or stop)
-    if (Threads.ponder.load(std::memory_order_relaxed)) return false;
+    if (Threads.ponder.load(std::memory_order_acquire)) return false;
     // Only main thread checks the clock
     if (thread && thread->idx != 0) return false;
-    // This replaces the old time_limit_ms check
-    if (time_limit_ms <= 0) return false;
+    // A ponder search starts with no limit. ponderhit publishes the real hard
+    // limit through ThreadPool without writing this Position concurrently.
+    const int activePoolLimit =
+        thread && thread->idx == 0
+            ? Threads.searchTimeMs.load(std::memory_order_acquire)
+            : 0;
+    if (time_limit_ms <= 0 && activePoolLimit <= 0) return false;
     return TimeMgr.elapsed() >= TimeMgr.maximum();
 }
 

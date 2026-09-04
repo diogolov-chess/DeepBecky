@@ -12,7 +12,8 @@
 TimeManagement TimeMgr;
 
 void TimeManagement::init(const SearchLimits& limits, bool whiteToMove, int ply) {
-    startTime = limits.startTime > 0 ? limits.startTime : now();
+    startTime.store(limits.startTime > 0 ? limits.startTime : now(),
+                    std::memory_order_release);
 
     fixed = (limits.movetime > 0);
 

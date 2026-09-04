@@ -323,14 +323,16 @@ void SearchThread::idle_loop() {
             // in an emergency clock situation. Keep configured helpers parked
             // when the hard allocation does not even exceed Move Overhead.
             // Depth/infinite/ponder searches retain their normal SMP behavior.
+            const int initialSearchTimeMs =
+                Threads.searchTimeMs.load(std::memory_order_acquire);
             const bool startHelpers =
-                TimeMgr.allowsHelperThreads(Threads.searchTimeMs);
+                TimeMgr.allowsHelperThreads(initialSearchTimeMs);
             if (startHelpers)
                 for (size_t i = 1; i < Threads.size(); i++)
                     Threads.at(i)->start_searching();
 
             // Run own search (with time management)
-            pos.search(Threads.searchMaxDepth, Threads.searchTimeMs);
+            pos.search(Threads.searchMaxDepth, initialSearchTimeMs);
 
             // Signal all threads to stop
             Threads.stop.store(true, std::memory_order_relaxed);
@@ -506,7 +508,7 @@ ThreadPool::~ThreadPool() {
 void ThreadPool::set(size_t num) {
     // Destroy existing threads
     if (!threads_.empty()) {
-        waitForSearchFinished();
+        stopAndWait();
         for (auto* t : threads_)
             delete t;
         threads_.clear();
@@ -529,6 +531,33 @@ void ThreadPool::waitForSearchFinished() {
         main()->wait_for_search_finished();
 }
 
+void ThreadPool::stopAndWait() {
+    ponder.store(false, std::memory_order_release);
+    stop.store(true, std::memory_order_release);
+
+    // A completed ponder search can be parked waiting to publish bestmove.
+    // Wake it before joining; otherwise quit/setoption/position can deadlock.
+    if (main())
+        main()->cv.notify_one();
+
+    waitForSearchFinished();
+}
+
+void ThreadPool::ponderHit() {
+    if (!ponder.load(std::memory_order_acquire))
+        return;
+
+    // Publish the real-search clock before clearing ponder. Search-side
+    // acquire loads then observe a complete, coherent transition.
+    TimeMgr.restartTimer();
+    searchTimeMs.store(static_cast<int>(TimeMgr.maximum()),
+                       std::memory_order_release);
+    ponder.store(false, std::memory_order_release);
+
+    if (main())
+        main()->cv.notify_one();
+}
+
 uint64_t ThreadPool::nodes_searched() const {
     uint64_t total = 0;
     for (auto* t : threads_)
@@ -538,11 +567,11 @@ uint64_t ThreadPool::nodes_searched() const {
 
 void ThreadPool::startThinking(Position& rootPos, int maxDepth, int timeMs, bool ponderMode) {
     // Wait for any previous search to complete
-    waitForSearchFinished();
+    stopAndWait();
 
     // Store search parameters
     searchMaxDepth = maxDepth;
-    searchTimeMs = timeMs;
+    searchTimeMs.store(timeMs, std::memory_order_release);
     stop.store(false, std::memory_order_relaxed);
     ponder.store(ponderMode, std::memory_order_relaxed);
 

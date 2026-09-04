@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 
 using TimePoint = int64_t;
@@ -53,10 +54,14 @@ public:
     TimePoint maximum() const { return maximumTime; }
 
     // Get elapsed time since search start
-    TimePoint elapsed() const { return now() - startTime; }
+    TimePoint elapsed() const {
+        return now() - startTime.load(std::memory_order_acquire);
+    }
 
     // Reset start time (used when transitioning from ponder to real search on ponderhit)
-    void restartTimer() { startTime = now(); }
+    void restartTimer() {
+        startTime.store(now(), std::memory_order_release);
+    }
 
     // Check if search uses fixed move time
     bool isFixedTime() const { return fixed; }
@@ -73,7 +78,9 @@ public:
     }
 
 private:
-    TimePoint startTime    = 0;
+    // ponderhit is received by the UCI thread while the search thread reads
+    // elapsed(). Keep the clock handoff free of C++ data races.
+    std::atomic<TimePoint> startTime{0};
     TimePoint optimumTime  = 0;
     TimePoint maximumTime  = 0;
     TimePoint moveOverhead = DEFAULT_MOVE_OVERHEAD;
