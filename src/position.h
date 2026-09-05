@@ -152,6 +152,8 @@ public:
     void undoMove(const Move& m);
     void makeNullMove();
     void undoNullMove();
+    // King-safety test for an already pseudo-legal move. Cached/untrusted
+    // encodings must pass isPseudoLegal() first (including special flags).
     bool legalMove(const Move& m);
     bool isPseudoLegal(const Move& m) const;
 

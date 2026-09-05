@@ -1,9 +1,9 @@
 //
-// Correctness model (see movepick.h): all emitted moves originate from
-// Position::generateLegal(), which produces fully legal moves. The TT
-// move, killers and counter-move are resolved against the generated
-// legal lists before being emitted, so the search always receives legal
-// moves with correct flags. Scoring, SEE filtering and sorting are only
+// Correctness model (see movepick.h): generated captures and quiets come
+// from Position::generateLegal(), which produces fully legal moves. The TT
+// move, killers and counter-move instead pass isPseudoLegal() (geometry
+// AND complete MoveType) and legalMove() before emission. Scoring,
+// SEE filtering and sorting are only
 // paid for the moves actually consumed; skipQuiets() lets the search
 // abandon the quiet stage entirely.
 

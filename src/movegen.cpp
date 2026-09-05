@@ -131,14 +131,12 @@ bool Position::legalMove(const Move& m) {
         if (to_sq != ep_sq) return false;
         int epCapturedSq = ep_sq + (us == WHITE ? -8 : 8);
 
-        U64 enemyRooksQueens = (us == WHITE)
-            ? (bitboards[BROOK] | bitboards[BQUEEN])
-            : (bitboards[WROOK] | bitboards[WQUEEN]);
-        U64 enemyBishopsQueens = (us == WHITE)
-            ? (bitboards[BBISHOP] | bitboards[BQUEEN])
-            : (bitboards[WBISHOP] | bitboards[WQUEEN]);
-
-        return isEnPassantLegal(ksq, from_sq, epCapturedSq, to_sq, all_pieces, enemyRooksQueens, enemyBishopsQueens);
+        // The caller has checked the move's geometry and captured pawn.
+        // Test ALL attacks after EP, including a pre-existing pawn/knight
+        // check that this capture might not evade.
+        U64 occAfter = (all_pieces ^ square_bb(from_sq) ^ square_bb(epCapturedSq))
+                     | square_bb(to_sq);
+        return !(attackersTo(ksq, occAfter) & (opp_pieces ^ square_bb(epCapturedSq)));
     }
 
     // 3. In Check / Checkers
@@ -183,6 +181,25 @@ bool Position::isPseudoLegal(const Move& m) const {
     U64 occ = color_bitboards[WHITE] | color_bitboards[BLACK];
     int promo = movePromotionType(m);
 
+    // Cached moves retain their complete MoveType. A killer/counter-move can
+    // come from a different position: geometry alone does not make its flags
+    // valid here. In particular, a remembered e8g8 CASTLE must never move a
+    // rook that now occupies e8 (make/undo would overwrite h8 and f8).
+    const MoveType type = moveTypeOf(m);
+    const bool pawn = piece == WPAWN || piece == BPAWN;
+    const bool king = piece == WKING || piece == BKING;
+    if (from_sq == to_sq || (type > MOVE_TYPE_CAPTURE && type < MOVE_TYPE_PROMO_KNIGHT))
+        return false;
+    if (piece_board[to_sq] == (us == WHITE ? BKING : WKING))
+        return false;
+    if (moveIsCastle(m)) {
+        if (!king || from_sq != (us == WHITE ? 4 : 60)) return false;
+    } else if (!pawn && (moveIsDoublePush(m) || moveIsEnPassant(m) || promo)) {
+        return false;
+    }
+    if (!moveIsEnPassant(m) && moveIsCapture(m) != (piece_board[to_sq] != EMPTY))
+        return false;
+
     // Validate based on piece type
     switch (piece) {
         case WPAWN:
@@ -204,8 +221,10 @@ bool Position::isPseudoLegal(const Move& m) const {
                 if (ep_file == 0) return false;
                 int ep_sq = sq(ep_file - 1, us == WHITE ? 5 : 2);
                 if (to_sq != ep_sq) return false;
-                if (abs(sq_x(from_sq) - sq_x(to_sq)) != 1) return false;
-                return true;
+                if (piece_board[to_sq] != EMPTY) return false;
+                if (piece_board[to_sq - dir] != (us == WHITE ? BPAWN : WPAWN)) return false;
+                const U64 attacks = us == WHITE ? WPAWN_ATK_BB[from_sq] : BPAWN_ATK_BB[from_sq];
+                return (attacks & square_bb(to_sq)) != 0;
             }
 
             if (isCapture) {
@@ -225,7 +244,7 @@ bool Position::isPseudoLegal(const Move& m) const {
             // Double push
             if (isDoublePush) {
                 if (from_sq + 2 * dir != to_sq) return false;
-                if ((us == WHITE && from_sq >= 16) || (us == BLACK && from_sq <= 47)) return false;
+                if (sq_rank(from_sq) != (us == WHITE ? 1 : 6)) return false;
                 if (occ & (1ULL << (from_sq + dir))) return false;
                 if (occ & (1ULL << to_sq)) return false;
                 return true;
@@ -251,12 +270,14 @@ bool Position::isPseudoLegal(const Move& m) const {
                 if (us == WHITE) {
                     if (to_sq == sq(6, 0)) {
                         if (!(castling & 8)) return false;
+                        if (piece_board[7] != WROOK) return false;
                         if (occ & 0x60ULL) return false;
                         if (isAttacked(5, false) || isAttacked(6, false)) return false;
                         return true;
                     }
                     if (to_sq == sq(2, 0)) {
                         if (!(castling & 4)) return false;
+                        if (piece_board[0] != WROOK) return false;
                         if (occ & 0xEULL) return false;
                         if (isAttacked(3, false) || isAttacked(2, false)) return false;
                         return true;
@@ -264,12 +285,14 @@ bool Position::isPseudoLegal(const Move& m) const {
                 } else {
                     if (to_sq == sq(6, 7)) {
                         if (!(castling & 2)) return false;
+                        if (piece_board[63] != BROOK) return false;
                         if (occ & 0x6000000000000000ULL) return false;
                         if (isAttacked(61, true) || isAttacked(62, true)) return false;
                         return true;
                     }
                     if (to_sq == sq(2, 7)) {
                         if (!(castling & 1)) return false;
+                        if (piece_board[56] != BROOK) return false;
                         if (occ & 0x0E00000000000000ULL) return false;
                         if (isAttacked(59, true) || isAttacked(58, true)) return false;
                         return true;
@@ -508,7 +531,8 @@ int Position::generateLegal(Move* moves, GenType type) {
             }
 
             // En passant
-            if (ep_file > 0) {
+            if (ep_file > 0 && piece_board[sq(ep_file - 1, 5)] == EMPTY &&
+                piece_board[sq(ep_file - 1, 4)] == BPAWN) {
                 int ep_sq = sq(ep_file - 1, 5);
                 int epCapturedSq = ep_sq - 8; // the pawn being captured
                 U64 ep = 1ULL << ep_sq;
@@ -605,7 +629,8 @@ int Position::generateLegal(Move* moves, GenType type) {
             }
 
             // En passant
-            if (ep_file > 0) {
+            if (ep_file > 0 && piece_board[sq(ep_file - 1, 2)] == EMPTY &&
+                piece_board[sq(ep_file - 1, 3)] == WPAWN) {
                 int ep_sq = sq(ep_file - 1, 2);
                 int epCapturedSq = ep_sq + 8;
                 U64 ep = 1ULL << ep_sq;
@@ -636,21 +661,21 @@ int Position::generateLegal(Move* moves, GenType type) {
 
     // === Castling (only when not in check and not captures-only) ===
     if (!capturesOnly && numCheckers == 0) {
-        if (us == WHITE) {
-            if ((castling & 8) && !(all_pieces & 0x60ULL) &&
+        if (us == WHITE && piece_board[4] == WKING) {
+            if ((castling & 8) && piece_board[7] == WROOK && !(all_pieces & 0x60ULL) &&
                 !isAttacked(5, false) && !isAttacked(6, false)) {
                 addMove(moves, count, sq(4, 0), sq(6, 0), MOVE_FLAG_CASTLE);
             }
-            if ((castling & 4) && !(all_pieces & 0xEULL) &&
+            if ((castling & 4) && piece_board[0] == WROOK && !(all_pieces & 0xEULL) &&
                 !isAttacked(3, false) && !isAttacked(2, false)) {
                 addMove(moves, count, sq(4, 0), sq(2, 0), MOVE_FLAG_CASTLE);
             }
-        } else {
-            if ((castling & 2) && !(all_pieces & 0x6000000000000000ULL) &&
+        } else if (us == BLACK && piece_board[60] == BKING) {
+            if ((castling & 2) && piece_board[63] == BROOK && !(all_pieces & 0x6000000000000000ULL) &&
                 !isAttacked(61, true) && !isAttacked(62, true)) {
                 addMove(moves, count, sq(4, 7), sq(6, 7), MOVE_FLAG_CASTLE);
             }
-            if ((castling & 1) && !(all_pieces & 0x0E00000000000000ULL) &&
+            if ((castling & 1) && piece_board[56] == BROOK && !(all_pieces & 0x0E00000000000000ULL) &&
                 !isAttacked(59, true) && !isAttacked(58, true)) {
                 addMove(moves, count, sq(4, 7), sq(2, 7), MOVE_FLAG_CASTLE);
             }
