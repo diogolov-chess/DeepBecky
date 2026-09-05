@@ -35,6 +35,12 @@ std::string toLower(const std::string &str) {
 void cmdUci() {
   std::cout << "id name " << ENGINE_VERSION << std::endl;
   std::cout << "id author Diogo de Oliveira Almeida" << std::endl;
+  if (NNUE::isReady())
+    std::cout << "info string NNUE ready: " << NNUE::currentModelPath()
+              << std::endl;
+  else
+    std::cout << "info string ERROR: NNUE is not loaded; search is disabled"
+              << std::endl;
   std::cout << "option name Hash type spin default 256 min 1 max 4096"
             << std::endl;
   std::cout << "option name Threads type spin default 4 min 1 max 256"
@@ -174,8 +180,7 @@ void cmdSetOption(Position &engine, std::istringstream &is) {
         std::cout << "info string NNUE architecture: "
                   << NNUE::architectureSummary() << std::endl;
       } else {
-        std::cout << "info string NNUE file not loaded; engine stays NNUE-only "
-                     "with neutral evaluation"
+        std::cout << "info string NNUE file not loaded; search is disabled"
                   << std::endl;
       }
     } else if (NNUE::loadModel(optValue)) {
@@ -184,8 +189,7 @@ void cmdSetOption(Position &engine, std::istringstream &is) {
       std::cout << "info string NNUE architecture: "
                 << NNUE::architectureSummary() << std::endl;
     } else {
-      std::cout << "info string NNUE file not loaded; engine stays NNUE-only "
-                   "with neutral evaluation"
+      std::cout << "info string NNUE file not loaded; search is disabled"
                 << std::endl;
     }
   } else if (optNameLower == "traininglog") {
@@ -332,6 +336,17 @@ void cmdPosition(Position &engine, std::istringstream &is) {
 void cmdGo(Position &engine, std::istringstream &is) {
   // Wait for any previous search to finish
   Threads.stopAndWait();
+
+  // Deep Becky is NNUE-only. Searching with the former neutral fallback can
+  // produce legal but effectively random moves when deployment forgot or
+  // rejected the network. Fail closed so the integration error is explicit.
+  if (!NNUE::isReady()) {
+    std::cout << "info string ERROR: cannot search without a valid NNUE model"
+              << std::endl;
+    std::cout << "bestmove 0000" << std::endl;
+    std::cout.flush();
+    return;
+  }
 
   SearchLimits limits;
   limits.startTime = now();

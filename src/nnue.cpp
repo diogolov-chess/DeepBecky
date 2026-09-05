@@ -241,8 +241,20 @@ bool headerMatchesArchitecture(const NNUE::ModelHeader& header) {
         && header.kingBuckets == NNUE::KingBuckets
         && header.scale == NNUE::NetworkScale
         && header.qa == NNUE::NetworkQA
-        && header.qb == NNUE::NetworkQB;
+        && header.qb == NNUE::NetworkQB
+        && header.payloadBytes == expectedPayloadBytes();
 }
+
+#ifdef __AVX2__
+std::uint32_t loadLittleEndianU32(const std::uint8_t* bytes) {
+    // Reading a uint8_t array through a uint32_t pointer violates C++ strict
+    // aliasing. memcpy is defined for object representations and optimizing
+    // compilers turn this fixed-size copy into the same unaligned load.
+    std::uint32_t value;
+    std::memcpy(&value, bytes, sizeof(value));
+    return value;
+}
+#endif
 
 template <typename T>
 inline __attribute__((always_inline)) void addFeatureContribution(const std::vector<T>& weights,
@@ -626,11 +638,11 @@ int evaluate(Position& pos) {
     // --- Mid layer (1536 uint8 -> 16 int32) ---
     __m256i midAcc0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&current.midBias[0]));
     __m256i midAcc1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&current.midBias[8]));
-    const uint32_t* in32 = reinterpret_cast<const uint32_t*>(activations.data());
     const __m256i ones = _mm256_set1_epi16(1);
 
     for (int chunk = 0; chunk < MidInputDimensions / 4; ++chunk) {
-        uint32_t in_val = in32[chunk];
+        const uint32_t in_val =
+            loadLittleEndianU32(activations.data() + chunk * 4);
         if (in_val == 0) continue;
 
         __m256i in_vec = _mm256_set1_epi32(static_cast<int32_t>(in_val));
@@ -666,10 +678,9 @@ int evaluate(Position& pos) {
     __m256i hidAcc2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&current.hiddenBias[16]));
     __m256i hidAcc3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&current.hiddenBias[24]));
 
-    const uint32_t* mid32 = reinterpret_cast<const uint32_t*>(middle.data());
-
     for (int chunk = 0; chunk < HeadDimensions / 4; ++chunk) {
-        uint32_t m_val = mid32[chunk];
+        const uint32_t m_val =
+            loadLittleEndianU32(middle.data() + chunk * 4);
         if (m_val == 0) continue;
 
         __m256i m_vec = _mm256_set1_epi32(static_cast<int32_t>(m_val));
