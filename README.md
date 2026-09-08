@@ -56,13 +56,14 @@ The current development branch (towards version **3.0**) introduces the transiti
 
 ## 🤖 Desenvolvimento por Vibe Coding & Contribuidores de IA / AI Contributors
 
-A evolução da Deep Becky é fruto de uma colaboração estreita entre seu criador humano e múltiplos modelos de Inteligência Artificial:
+A evolução da Deep Becky é fruto de uma colaboração estreita entre seu criador humano e múltiplos modelos de Inteligência Artificial de ponta:
 
 | IA / Modelo | Provedor | Papel no Projeto |
 | :--- | :--- | :--- |
-| **ChatGPT / GPT-4o / GPT-5** | OpenAI | **A Centelha Inicial (Julho/2025)**: Concepção da engine, primeiras estruturas de dados, auditorias de código e depuração tática. |
+| **ChatGPT / GPT-4o / GPT-5 / GPT-6** | OpenAI | **A Centelha Inicial (Julho/2025)**: Concepção da engine, primeiras estruturas de dados, auditorias de código e depuração tática. |
 | **Claude (Sonnet / Opus)** | Anthropic | **Refatoração & Performance**: Arquitetura NNUE (13 King Buckets), vetorização SIMD AVX2/BMI2 e afinação de heurísticas de busca. |
 | **Gemini (Advanced / Antigravity)** | Google | **Pair Programming & Infraestrutura**: Diagnóstico de partidas no Lichess, rotinas de validação, testes de regressão e Lazy SMP. |
+| **DeepSeek (R1 / V3)** | DeepSeek AI | **Raciocínio & Análise Algorítmica**: Resolução de inconsistências lógicas profundas, refinamento matemático de fórmulas e otimização de busca. |
 
 ---
 
