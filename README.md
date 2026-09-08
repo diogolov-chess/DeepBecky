@@ -5,10 +5,11 @@
 # Deep Becky — UCI Chess Engine
 **Development (Towards v3.0) — NNUE Neural Network + Lazy SMP**
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
-[![AVX2 + BMI2](https://img.shields.io/badge/SIMD-AVX2%20%7C%20BMI2-orange.svg)]()
-[![Lichess Bot](https://img.shields.io/badge/Lichess-DeepBecky-green.svg)](https://lichess.org/@/DeepBecky)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](LICENSE)
+[![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C.svg?style=for-the-badge&logo=c%2B%2B)](https://isocpp.org/)
+[![AVX2 + BMI2](https://img.shields.io/badge/SIMD-AVX2%20%7C%20BMI2-orange.svg?style=for-the-badge)]()
+[![Lichess Bot](https://img.shields.io/badge/Lichess-DeepBecky-059669.svg?style=for-the-badge&logo=lichess&logoColor=white)](https://lichess.org/@/DeepBecky)
+[![Vibe Coding](https://img.shields.io/badge/Made%20with-Vibe%20Coding-blueviolet.svg?style=for-the-badge)]()
 
 </div>
 
@@ -16,9 +17,13 @@
 
 ## 🇧🇷 Sobre o Projeto
 
-A **Deep Becky** é uma engine de xadrez de alta performance que implementa o protocolo UCI (Universal Chess Interface).
+A **Deep Becky** é uma engine de xadrez experimental desenvolvida como **projeto de hobby**, nascida e refinada através do conceito de **Vibe Coding** (programação em par com Inteligência Artificial).
 
-Esta versão em desenvolvimento (rumo à versão **3.0**) marca a evolução arquitetural para avaliação neural **NNUE v5 Compact (13 King Buckets $\times$ 768 $\times$ 8 Material Buckets)**, treinada em centenas de milhões de posições puras do Leela Chess Zero com ponderação WDL + Centipawns, inferência otimizada AVX2 SIMD e suporte a múltiplos núcleos via Lazy SMP.
+Tenho um apreço muito especial por este projeto: tudo começou em **julho do ano passado**, de forma caseira, intuitiva e arcaica, conversando em linguagem natural com o ChatGPT. No início, a IA cometia erros constantes — sugeria códigos que nem sequer compilavam, confundia regras fundamentais do xadrez e chegava a gerar movimentos ilegais. A primeiríssima versão sequer utilizava *bitboards*; era uma representação simples e rudimentar de tabuleiro.
+
+Ao longo de todo esse tempo, o projeto passou por centenas de refatorações completas, caça a bugs silenciosos e reescritas de arquitetura. Daquela base experimental e imperfeita, a Deep Becky amadureceu e se transformou em uma engine competitiva em C++17, com bitboards de 64 bits, avaliação neural de última geração e busca paralela de alta velocidade.
+
+Esta versão em desenvolvimento (rumo à versão **3.0**) marca a evolução para a rede neural **NNUE v5 Compact (13 King Buckets $\times$ 768 $\times$ 8 Material Buckets)**, treinada em centenas de milhões de posições puras do Leela Chess Zero com ponderação WDL + Centipawns, inferência ultra-rápida AVX2 SIMD e suporte a múltiplos núcleos via Lazy SMP.
 
 ### Destaques em Desenvolvimento (Rumo à 3.0):
 * **Avaliação NNUE v5 Compact:** Rede neural com 13 King Buckets anatômicos, acumulador dual perspective de 1536 neurônios e 8 buckets de material.
@@ -34,7 +39,11 @@ Esta versão em desenvolvimento (rumo à versão **3.0**) marca a evolução arq
 
 ## 🇺🇸 About the Project
 
-**Deep Becky** is a high-performance UCI chess engine featuring state-of-the-art NNUE evaluation and modern search heuristics.
+**Deep Becky** is an experimental UCI chess engine developed as a **hobby project**, created and continuously evolved through the concept of **Vibe Coding** (human-AI pair programming).
+
+This project holds a very special place for me: it began in **July of last year** in an artisanal, exploratory way, chatting naturally with ChatGPT. In the beginning, the AI made countless mistakes — outputting code that wouldn't even compile, hallucinating chess rules, and proposing illegal moves. The very first iteration didn't even use *bitboards*; it was a basic, naive board representation.
+
+Through relentless iterations, deep refactorings, and bug-hunting over many months, Deep Becky matured into a full-featured, competitive C++17 chess engine. Today it features 64-bit bitboards, state-of-the-art NNUE neural evaluation, and scalable Lazy SMP search.
 
 The current development branch (towards version **3.0**) introduces the transition to **NNUE v5 Compact (13 King Buckets $\times$ 768 $\times$ 8 Material Buckets)**, trained on massive Leela Chess Zero datasets, AVX2 SIMD vectorization, and robust Lazy SMP multi-threading.
 
@@ -42,6 +51,18 @@ The current development branch (towards version **3.0**) introduces the transiti
 * **NNUE Evaluation (v5 Compact):** 13 King Buckets, 1536 dual-perspective accumulator, 8 output material buckets, trained on massive Leela Chess Zero datasets.
 * **AVX2 SIMD Vectorization:** Highly optimized inference with sparse neuron skipping delivering >1.2M NPS on modern quad-core CPUs.
 * **Advanced Search Heuristics:** Singular Extensions, 4-tier Continuation History, Correction History, ProbCut, Adaptive NMP, and depth-qualified Lazy SMP multi-threading.
+
+---
+
+## 🤖 Desenvolvimento por Vibe Coding & Contribuidores de IA / AI Contributors
+
+A evolução da Deep Becky é fruto de uma colaboração estreita entre seu criador humano e múltiplos modelos de Inteligência Artificial:
+
+| IA / Modelo | Provedor | Papel no Projeto |
+| :--- | :--- | :--- |
+| **ChatGPT / GPT-4o / GPT-5** | OpenAI | **A Centelha Inicial (Julho/2025)**: Concepção da engine, primeiras estruturas de dados, auditorias de código e depuração tática. |
+| **Claude (Sonnet / Opus)** | Anthropic | **Refatoração & Performance**: Arquitetura NNUE (13 King Buckets), vetorização SIMD AVX2/BMI2 e afinação de heurísticas de busca. |
+| **Gemini (Advanced / Antigravity)** | Google | **Pair Programming & Infraestrutura**: Diagnóstico de partidas no Lichess, rotinas de validação, testes de regressão e Lazy SMP. |
 
 ---
 
