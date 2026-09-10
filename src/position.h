@@ -67,7 +67,7 @@ public:
     // Game State
     bool white_to_move = true;
     int castling = 0b1111;  // Bitfield: KQkq
-    int ep_file = 0;        // 1..8 if en-passant square is active
+    int ep_file = 0;        // 1..8 only when at least one LEGAL EP capture exists
     int king_sq[COLOR_NB]{4, 60};
     int halfmove = 0;
     int fullmove = 1;
@@ -91,7 +91,7 @@ public:
     std::atomic<int64_t> nodes{0};
     int selDepth = 0;
     bool stopSearching = false;
-    std::chrono::high_resolution_clock::time_point start_time;
+    std::chrono::steady_clock::time_point start_time;
     int time_limit_ms = 0;
     
     // Root best move - tracked directly inside pvs() at ply 0 to prevent TT race conditions
@@ -131,6 +131,8 @@ public:
 
     // Board Setup & FEN
     void setStartPos();
+    // Invalid syntax/board leaves all state intact. King/rook off its home
+    // square removes castling rights; unavailable EP is removed. Accepts 4..6 fields.
     bool setFEN(const std::string& fen);
     std::string toFEN() const;
     uint64_t computeHash() const;

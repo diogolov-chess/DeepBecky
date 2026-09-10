@@ -84,7 +84,7 @@ void TTEntry::save(uint64_t k, int16_t v, bool pv, TTFlag b, int d,
 
 TranspositionTable::TranspositionTable()
     : table_(nullptr), clusterCount_(0), generation8_(0) {
-    resize(64);  // 64 MB default
+    resize(256); // UCI default; avoid allocating/clearing a discarded 64 MiB table.
 }
 
 TranspositionTable::~TranspositionTable() {
@@ -169,7 +169,7 @@ void TranspositionTable::resize(size_t sizeMB) {
     clusterCount_ = newClusterCount;
     for (size_t i = 0; i < clusterCount_; ++i)
         ::new (static_cast<void*>(table_ + i)) TTCluster;
-    clear();
+    generation8_ = 0; // TTCluster construction already cleared every entry.
 }
 
 void TranspositionTable::clear() {
@@ -183,8 +183,7 @@ void TranspositionTable::clear() {
     // Multi-threaded clear: split memset across available hardware threads.
     // With 256MB+ hash, single-threaded memset takes hundreds of ms.
     // Splitting across N threads makes this near-instantaneous.
-    size_t threadCount = std::max(size_t(1), size_t(std::thread::hardware_concurrency()));
-    if (threadCount > 16) threadCount = 16;  // cap to avoid over-subscription
+    const size_t threadCount = clearThreadCount_;
 
     auto clearRange = [this](size_t start, size_t len) {
         for (size_t i = start; i < start + len; ++i)
@@ -198,14 +197,16 @@ void TranspositionTable::clear() {
     }
 
     std::vector<std::thread> workers;
-    workers.reserve(threadCount);
-
     const size_t stride = clusterCount_ / threadCount;
-    for (size_t i = 0; i < threadCount; ++i) {
-        const size_t start = stride * i;
-        const size_t len   = (i + 1 != threadCount) ? stride : clusterCount_ - start;
-        workers.emplace_back(clearRange, start, len);
+    size_t next = 0;
+    try {
+        workers.reserve(threadCount - 1);
+        for (; next + 1 < threadCount; ++next)
+            workers.emplace_back(clearRange, stride * next, stride);
+    } catch (const std::exception&) {
+        // Resource exhaustion: finish all unassigned ranges on the caller.
     }
+    clearRange(stride * next, clusterCount_ - stride * next);
 
     for (auto& w : workers)
         w.join();

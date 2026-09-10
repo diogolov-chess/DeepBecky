@@ -18,7 +18,7 @@ void cmdNewGame(Position& engine);
 void cmdPosition(Position& engine, std::istringstream& is);
 void cmdGo(Position& engine, std::istringstream& is);
 void cmdStop();
-void cmdPonderHit(Position& engine);
+void cmdPonderHit();
 void cmdPerft(Position& engine, std::istringstream& is);
 
 // Utility string functions

@@ -253,6 +253,16 @@ $(SEARCH_TEST_TARGET): $(SEARCH_TEST_OBJ) $(SEARCH_TEST_SRC) | $(BUILD_DIR)
 	@echo "== Linking search regression tests ($(COMPILER_TYPE), $(PROFILE)) =="
 	$(CXX) $(SEARCH_TEST_CXXFLAGS) $(SEARCH_TEST_SRC) $(SEARCH_TEST_OBJ) -o $@ $(SEARCH_TEST_LDFLAGS)
 
+POSITION_TEST_TARGET := $(BUILD_DIR)/position_integrity_tests$(TARGET_EXT)
+POSITION_TEST_SRC := ../tests/position_integrity_tests.cpp
+
+.PHONY: position-tests
+position-tests: $(POSITION_TEST_TARGET)
+	@$(POSITION_TEST_TARGET)
+
+$(POSITION_TEST_TARGET): $(SEARCH_TEST_OBJ) $(POSITION_TEST_SRC) | $(BUILD_DIR)
+	$(CXX) $(SEARCH_TEST_CXXFLAGS) $(POSITION_TEST_SRC) $(SEARCH_TEST_OBJ) -o $@ $(SEARCH_TEST_LDFLAGS)
+
 # Coherent transposition-table snapshot and concurrency tests.
 TT_TEST_TARGET := $(BUILD_DIR)/tt_concurrency_tests$(TARGET_EXT)
 TT_TEST_SRC := ../tests/tt_concurrency_tests.cpp
@@ -268,11 +278,24 @@ $(TT_TEST_TARGET): $(TT_TEST_OBJ) $(TT_TEST_SRC) | $(BUILD_DIR)
 	$(CXX) $(TT_TEST_CXXFLAGS) $(TT_TEST_SRC) $(TT_TEST_OBJ) -o $@ $(TT_TEST_LDFLAGS)
 
 # Link
+.PHONY: smp-tests
+smp-tests: $(BUILD_DIR)/smp_lifecycle_tests$(TARGET_EXT)
+	@$(BUILD_DIR)/smp_lifecycle_tests$(TARGET_EXT)
+
+$(BUILD_DIR)/thread-test.o: thread.cpp $(HEADERS) | $(BUILD_DIR)
+	$(CXX) $(SEARCH_TEST_CXXFLAGS) -fexceptions -funwind-tables -DDEEPBECKY_TEST_HOOKS -c $< -o $@
+
+$(BUILD_DIR)/smp_lifecycle_tests$(TARGET_EXT): ../tests/smp_lifecycle_tests.cpp $(filter-out $(BUILD_DIR)/thread.o,$(SEARCH_TEST_OBJ)) $(BUILD_DIR)/thread-test.o
+	$(CXX) $(SEARCH_TEST_CXXFLAGS) -fexceptions -DDEEPBECKY_TEST_HOOKS $^ -o $@ $(SEARCH_TEST_LDFLAGS)
+
 $(TARGET): $(OBJ)
 	@echo "== Linking $(TARGET) ($(COMPILER_TYPE), $(PROFILE)) =="
 	$(CXX) $(OBJ) -o $@ $(LDFLAGS)
 
 # Compile C++ Object Files
+# Resource construction must unwind if allocation/native thread creation fails.
+# Hot recursive search remains compiled without exceptions.
+$(BUILD_DIR)/thread.o $(BUILD_DIR)/position.o $(BUILD_DIR)/tt.o: CXXFLAGS += -fexceptions -funwind-tables
 $(BUILD_DIR)/%.o: %.cpp $(HEADERS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
@@ -325,6 +348,12 @@ else
 	@rm -rf $(PGO_DIR)
 endif
 
+ifeq ($(DETECTED_OS),Windows)
+PYTHON ?= python
+else
+PYTHON ?= python3
+endif
+
 pgo-gen: clean
 	@echo ""
 	@echo "============================================================"
@@ -333,78 +362,10 @@ pgo-gen: clean
 	@$(MAKE) -f $(SELF_MK) PGO=gen PROFILE=$(PROFILE) CXX=$(CXX) all
 	@echo ""
 	@echo "== Running Diverse Training Suite to Collect Profile Data (depth=$(PGO_DEPTH)) =="
-ifdef MSYSTEM
-	@mkdir -p $(PGO_DIR)
-	@echo -e "uci\nisready\nucinewgame\n\
-position startpos\ngo depth $(PGO_DEPTH)\nisready\n\
-position startpos moves e2e4 e7e5 g1f3 b8c6 f1b5\ngo depth $(PGO_DEPTH)\nisready\n\
-position startpos moves d2d4 d7d5 c2c4 e7e6 b1c3 g8f6 c1g5\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen r1bqk2r/pppp1ppp/2n5/1B2p3/4n3/5N2/PPPP1PPP/RNBQ1RK1 w kq -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen r1bqkb1r/pp2pppp/2np1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen rnbqkb1r/pp3ppp/4pn2/2pp4/2PP4/2N1PN2/PP3PPP/R1BQKB1R b KQkq -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen r2q1rk1/1pp1bppp/p1np1nb1/4p3/2B1P1P1/2NP1N1P/PPP2P2/R1BQR1K1 w - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen r1b1qrk1/ppp2pbp/3p1np1/4p3/2PPP3/2N1BN2/PP2BPPP/R2Q1RK1 w - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen 8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen 8/8/4kpp1/3p1b2/p6P/2B5/6PK/8 w - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen 8/5k2/1p6/p1p2Pp1/P1P3K1/8/8/8 b - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen 2r3k1/1p3ppp/3bpn2/3p4/3P4/1PN1P3/1B3PPP/5RK1 w - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen 3r2k1/p4p1p/1p4p1/2r5/4B3/P3P1P1/1P1n1P1P/R2R2K1 b - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen rnbqkb1r/pp1p1pPp/8/2p1pP2/1P1P4/3P3P/P1P1P3/RNBQKBNR w KQkq e6\ngo depth $(PGO_DEPTH)\nisready\n\
-quit" | ./$(TARGET) > $(DEV_NULL) 2>&1 || true
+	$(PYTHON) pgo_driver.py --engine ./$(TARGET) --depth $(PGO_DEPTH)
 ifeq ($(COMPILER_TYPE),clang)
-	@echo "== Merging Clang profile data using $(LLVM_PROFDATA) =="
-	@$(LLVM_PROFDATA) merge -output=$(PGO_DIR)/deepbecky.profdata $(PGO_DIR)/*.profraw
+	$(LLVM_PROFDATA) merge -output=$(PGO_DIR)/deepbecky.profdata $(PGO_DIR)/*.profraw
 endif
-else ifeq ($(DETECTED_OS),Windows)
-	@if not exist $(PGO_DIR) mkdir $(PGO_DIR)
-	@(echo uci & echo isready & echo ucinewgame & \
-echo position startpos & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position startpos moves e2e4 e7e5 g1f3 b8c6 f1b5 & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position startpos moves d2d4 d7d5 c2c4 e7e6 b1c3 g8f6 c1g5 & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position fen r1bqk2r/pppp1ppp/2n5/1B2p3/4n3/5N2/PPPP1PPP/RNBQ1RK1 w kq - & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position fen r1bqkb1r/pp2pppp/2np1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position fen rnbqkb1r/pp3ppp/4pn2/2pp4/2PP4/2N1PN2/PP3PPP/R1BQKB1R b KQkq - & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position fen r2q1rk1/1pp1bppp/p1np1nb1/4p3/2B1P1P1/2NP1N1P/PPP2P2/R1BQR1K1 w - - & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position fen r1b1qrk1/ppp2pbp/3p1np1/4p3/2PPP3/2N1BN2/PP2BPPP/R2Q1RK1 w - - & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position fen 8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position fen 8/8/4kpp1/3p1b2/p6P/2B5/6PK/8 w - - & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position fen 8/5k2/1p6/p1p2Pp1/P1P3K1/8/8/8 b - - & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position fen 2r3k1/1p3ppp/3bpn2/3p4/3P4/1PN1P3/1B3PPP/5RK1 w - - & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position fen 3r2k1/p4p1p/1p4p1/2r5/4B3/P3P1P1/1P1n1P1P/R2R2K1 b - - & echo go depth $(PGO_DEPTH) & echo isready & \
-echo position fen rnbqkb1r/pp1p1pPp/8/2p1pP2/1P1P4/3P3P/P1P1P3/RNBQKBNR w KQkq e6 & echo go depth $(PGO_DEPTH) & echo isready & \
-echo quit) | $(TARGET) > $(DEV_NULL) 2>&1 || true
-ifeq ($(COMPILER_TYPE),clang)
-	@echo "== Merging Clang profile data using $(LLVM_PROFDATA) =="
-	@$(LLVM_PROFDATA) merge -output=$(PGO_DIR)/deepbecky.profdata $(PGO_DIR)/*.profraw
-endif
-else
-	@mkdir -p $(PGO_DIR)
-	@echo "== Running Diverse Training Suite to Collect Profile Data (depth=$(PGO_DEPTH)) =="
-	@printf "uci\nisready\nucinewgame\n\
-position startpos\ngo depth $(PGO_DEPTH)\nisready\n\
-position startpos moves e2e4 e7e5 g1f3 b8c6 f1b5\ngo depth $(PGO_DEPTH)\nisready\n\
-position startpos moves d2d4 d7d5 c2c4 e7e6 b1c3 g8f6 c1g5\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen r1bqk2r/pppp1ppp/2n5/1B2p3/4n3/5N2/PPPP1PPP/RNBQ1RK1 w kq -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen r1bqkb1r/pp2pppp/2np1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen rnbqkb1r/pp3ppp/4pn2/2pp4/2PP4/2N1PN2/PP3PPP/R1BQKB1R b KQkq -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen r2q1rk1/1pp1bppp/p1np1nb1/4p3/2B1P1P1/2NP1N1P/PPP2P2/R1BQR1K1 w - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen r1b1qrk1/ppp2pbp/3p1np1/4p3/2PPP3/2N1BN2/PP2BPPP/R2Q1RK1 w - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen 8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen 8/8/4kpp1/3p1b2/p6P/2B5/6PK/8 w - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen 8/5k2/1p6/p1p2Pp1/P1P3K1/8/8/8 b - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen 2r3k1/1p3ppp/3bpn2/3p4/3P4/1PN1P3/1B3PPP/5RK1 w - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen 3r2k1/p4p1p/1p4p1/2r5/4B3/P3P1P1/1P1n1P1P/R2R2K1 b - -\ngo depth $(PGO_DEPTH)\nisready\n\
-position fen rnbqkb1r/pp1p1pPp/8/2p1pP2/1P1P4/3P3P/P1P1P3/RNBQKBNR w KQkq e6\ngo depth $(PGO_DEPTH)\nisready\n\
-quit\n" | ./$(TARGET) > $(DEV_NULL) 2>&1 || true
-ifeq ($(COMPILER_TYPE),clang)
-	@echo "== Merging Clang profile data using $(LLVM_PROFDATA) =="
-	@$(LLVM_PROFDATA) merge -output=$(PGO_DIR)/deepbecky.profdata $(PGO_DIR)/*.profraw
-endif
-endif
-	@echo "== Profile data successfully collected in '$(PGO_DIR)' =="
 
 pgo-use:
 	@echo ""
@@ -442,7 +403,7 @@ ifeq ($(DETECTED_OS),Linux)
 	sudo apt-get update -y
 	@echo ""
 	@echo "--> Instalando GCC, Make e utilitarios base..."
-	sudo apt-get install -y build-essential make
+	sudo apt-get install -y build-essential make python3
 	@echo ""
 	@echo "--> Instalando Clang, LLVM e LLD (para compilar com clang++ + ThinLTO)..."
 	sudo apt-get install -y clang llvm lld

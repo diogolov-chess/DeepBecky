@@ -10,11 +10,21 @@
 #include "tt.h"
 #include "search.h"
 #include "timeman.h"
+#include "ucioutput.h"
 #include <algorithm>
 #include <map>
 #include <iostream>
+#include <memory>
+#include <exception>
 
 ThreadPool Threads;
+#ifdef DEEPBECKY_TEST_HOOKS
+namespace ThreadTestHooks {
+std::atomic<void(*)()> beforeIdle{nullptr};
+std::atomic<void(*)()> beforeOutputWait{nullptr};
+std::atomic<int> failCreationAt{-1};
+}
+#endif
 
 namespace {
 
@@ -256,18 +266,9 @@ bool runSelectionUnitTests() {
     return true;
 }
 
-bool isLegalRootMove(Position& root, Move move) {
-    Move legalMoves[MAX_MOVES];
-    const int legalMoveCount = root.generateLegal(legalMoves);
-    for (int i = 0; i < legalMoveCount; ++i) {
-        if (legalMoves[i] == move)
-            return true;
-    }
-    return false;
-}
-
 void printLazySmpDiagnostics(const std::vector<SelectionCandidate>& candidates,
                              size_t selected, const SearchThread& outputThread) {
+    UCI::OutputLock outputLock(UCI::outputMutex());
     for (const SelectionCandidate& candidate : candidates) {
         std::cout << "info string lazy-smp thread=" << candidate.threadId
                   << " completed=" << (candidate.hasCompletedIteration ? 1 : 0)
@@ -308,6 +309,9 @@ SearchThread::~SearchThread() {
 }
 
 void SearchThread::idle_loop() {
+#ifdef DEEPBECKY_TEST_HOOKS
+    if (auto hook = ThreadTestHooks::beforeIdle.load()) hook();
+#endif
     while (true) {
         {
             std::unique_lock<std::mutex> lk(mtx);
@@ -325,13 +329,15 @@ void SearchThread::idle_loop() {
             // Depth/infinite/ponder searches retain their normal SMP behavior.
             const int initialSearchTimeMs =
                 Threads.searchTimeMs.load(std::memory_order_acquire);
-            const bool startHelpers =
-                TimeMgr.allowsHelperThreads(initialSearchTimeMs);
+            const bool startHelpers = Threads.activeThreads > 1;
             if (startHelpers)
-                for (size_t i = 1; i < Threads.size(); i++)
+                for (size_t i = 1; i < Threads.activeThreads; i++)
                     Threads.at(i)->start_searching();
 
             // Run own search (with time management)
+            const double oldReduction = previousTimeReduction;
+            const int oldScore = bestPreviousScore;
+            const int oldAverage = bestPreviousAverageScore;
             pos.search(Threads.searchMaxDepth, initialSearchTimeMs);
 
             // Signal all threads to stop
@@ -339,13 +345,15 @@ void SearchThread::idle_loop() {
 
             // Wait for helpers to finish
             if (startHelpers)
-                for (size_t i = 1; i < Threads.size(); i++)
+                for (size_t i = 1; i < Threads.activeThreads; i++)
                     Threads.at(i)->wait_for_search_finished();
 
             // === DEPTH-QUALIFIED LAZY SMP SELECTION (POLICY C2) ===
             std::vector<SelectionCandidate> candidates;
-            candidates.reserve(Threads.size());
-            for (size_t i = 0; i < Threads.size(); ++i) {
+            candidates.reserve(Threads.activeThreads);
+            Move rootMoves[MAX_MOVES];
+            const int rootCount = pos.generateLegal(rootMoves);
+            for (size_t i = 0; i < Threads.activeThreads; ++i) {
                 SearchThread* thread = Threads.at(i);
                 SelectionCandidate candidate;
                 candidate.threadId = thread->idx;
@@ -356,8 +364,15 @@ void SearchThread::idle_loop() {
                 candidate.pvMatchesBestMove =
                     !thread->completedPV.empty() &&
                     thread->completedPV.front() == candidate.bestMove;
+                if (i > 0 && candidate.pvMatchesBestMove) {
+                    const std::string validPV = pos.pvToString(thread->completedPV);
+                    const size_t validLength = validPV.empty() ? 0
+                        : static_cast<size_t>(std::count(validPV.begin(), validPV.end(), ' ')) + 1;
+                    candidate.pvMatchesBestMove = validLength == thread->completedPV.size();
+                }
                 candidate.hasCompletedIteration = thread->hasCompletedIteration;
-                candidate.legalMove = isLegalRootMove(pos, candidate.bestMove);
+                candidate.legalMove = std::find(rootMoves, rootMoves + rootCount,
+                                                 candidate.bestMove) != rootMoves + rootCount;
                 candidates.push_back(candidate);
             }
 
@@ -372,16 +387,33 @@ void SearchThread::idle_loop() {
 
             // If in ponder mode, wait for ponderhit or stop before outputting
             // (the stop/ponderhit handler already clears ponder flag)
-            if (Threads.ponder.load(std::memory_order_relaxed)) {
-                // Ponder search finished before ponderhit; wait for it
+            {
+                // Search completion does not authorize a ponder/infinite reply.
+                // Both predicate updates and this check use the same mutex.
                 std::unique_lock<std::mutex> lk(mtx);
-                cv.wait(lk, [&] { return !Threads.ponder.load(std::memory_order_relaxed); });
+#ifdef DEEPBECKY_TEST_HOOKS
+                if (auto hook = ThreadTestHooks::beforeOutputWait.load()) hook();
+#endif
+                cv.wait(lk, [&] { return !Threads.ponder.load(std::memory_order_relaxed)
+                                             && !Threads.infinite; });
+                if (Threads.cancelledPonder) {
+                    previousTimeReduction = oldReduction;
+                    bestPreviousScore = oldScore;
+                    bestPreviousAverageScore = oldAverage;
+                } else if (bestThread->hasCompletedIteration) {
+                    bestPreviousScore = bestThread->bestScore;
+                    bestPreviousAverageScore = bestThread->completedAverageScore > -INF_SCORE
+                        ? bestThread->completedAverageScore : bestThread->bestScore;
+                }
             }
+
+            // Protect complete output sequences against isready/other UCI replies.
+            UCI::OutputLock outputLock(UCI::outputMutex());
 
 #ifdef ENABLE_SEARCH_STATS
             if (Threads.searchStatsEnabled) {
                 SearchStats aggregate;
-                for (size_t i = 0; i < Threads.size(); ++i)
+                for (size_t i = 0; i < Threads.activeThreads; ++i)
                     aggregate += Threads.at(i)->searchStats;
                 std::cout << "info string searchstats "
                           << aggregate.toUciString() << std::endl;
@@ -399,7 +431,7 @@ void SearchThread::idle_loop() {
                 // If best thread is not us, print its info line
                 if (bestThread != this && bestThread->completedDepth > 0) {
                     uint64_t totalNodes = Threads.nodes_searched();
-                    auto now_t = std::chrono::high_resolution_clock::now();
+                    auto now_t = std::chrono::steady_clock::now();
                     long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                         now_t - pos.start_time).count();
                     if (ms == 0) ms = 1;
@@ -428,7 +460,7 @@ void SearchThread::idle_loop() {
                 Move ponderMove = MOVE_NONE;
                 const std::vector<Move>& pvLine = bestThread->completedPV;
                 if (pvLine.size() >= 2 && pvLine[0] == bm) {
-                    Position childPos = pos;
+                    Position& childPos = pos;
                     childPos.makeMove(bm);
                     Move legalMoves[MAX_MOVES];
                     int numLegal = childPos.generateLegal(legalMoves);
@@ -438,6 +470,7 @@ void SearchThread::idle_loop() {
                             break;
                         }
                     }
+                    childPos.undoMove(bm);
                     if (!moveIsNone(ponderMove)) {
                         std::cout << "bestmove " << pos.moveToUCI(bm) << " ponder " << childPos.moveToUCI(ponderMove);
                     } else {
@@ -453,7 +486,7 @@ void SearchThread::idle_loop() {
         } else {
             // === HELPER THREAD ===
             // Search until Threads.stop is set
-            pos.search(64, 0);
+            pos.search(Threads.searchMaxDepth, 0);
         }
     }
 }
@@ -487,6 +520,7 @@ void SearchThread::clear() {
     completedDepth = 0;
     completedPV.clear();
     hasCompletedIteration = false;
+    completedAverageScore = -INF_SCORE;
     bestMoveChanges.store(0, std::memory_order_relaxed);
     previousTimeReduction = 1.0;
     bestPreviousScore = -INF_SCORE;
@@ -505,20 +539,34 @@ ThreadPool::~ThreadPool() {
     set(0);
 }
 
-void ThreadPool::set(size_t num) {
-    // Destroy existing threads
-    if (!threads_.empty()) {
-        stopAndWait();
-        for (auto* t : threads_)
-            delete t;
-        threads_.clear();
+bool ThreadPool::set(size_t num) {
+    if (num == threads_.size()) return true;
+    stopAndWait();
+    // Build and park replacements before releasing the working pool.
+    std::vector<std::unique_ptr<SearchThread>> replacements;
+    std::vector<SearchThread*> newPool;
+    try {
+        replacements.reserve(num);
+        newPool.reserve(num);
+        for (size_t i = 0; i < num; ++i) {
+#ifdef DEEPBECKY_TEST_HOOKS
+            if (static_cast<int>(i) == ThreadTestHooks::failCreationAt.load())
+                throw std::bad_alloc();
+#endif
+            replacements.emplace_back(std::make_unique<SearchThread>(i));
+            newPool.push_back(replacements.back().get());
+        }
+    } catch (const std::exception& error) {
+        UCI::OutputLock outputLock(UCI::outputMutex());
+        std::cout << "info string ERROR: thread pool unchanged: " << error.what() << std::endl;
+        return false;
     }
-
-    if (num > 0) {
-        threads_.reserve(num);
-        for (size_t i = 0; i < num; i++)
-            threads_.push_back(new SearchThread(i));
-    }
+    threads_.swap(newPool);
+    activeThreads = threads_.size();
+    TT.setClearThreadCount(std::max(size_t(1), threads_.size()));
+    for (auto& thread : replacements) (void)thread.release();
+    for (auto* thread : newPool) delete thread;
+    return true;
 }
 
 void ThreadPool::clear() {
@@ -532,8 +580,17 @@ void ThreadPool::waitForSearchFinished() {
 }
 
 void ThreadPool::stopAndWait() {
-    ponder.store(false, std::memory_order_release);
-    stop.store(true, std::memory_order_release);
+    if (main()) {
+        std::lock_guard<std::mutex> lk(main()->mtx);
+        if (ponder.load(std::memory_order_relaxed)) cancelledPonder = true;
+        ponder.store(false, std::memory_order_release);
+        infinite = false;
+        stop.store(true, std::memory_order_release);
+    } else {
+        ponder.store(false, std::memory_order_release);
+        infinite = false;
+        stop.store(true, std::memory_order_release);
+    }
 
     // A completed ponder search can be parked waiting to publish bestmove.
     // Wake it before joining; otherwise quit/setoption/position can deadlock.
@@ -544,6 +601,8 @@ void ThreadPool::stopAndWait() {
 }
 
 void ThreadPool::ponderHit() {
+    if (!main()) return;
+    std::lock_guard<std::mutex> lk(main()->mtx);
     if (!ponder.load(std::memory_order_acquire))
         return;
 
@@ -560,25 +619,30 @@ void ThreadPool::ponderHit() {
 
 uint64_t ThreadPool::nodes_searched() const {
     uint64_t total = 0;
-    for (auto* t : threads_)
-        total += static_cast<uint64_t>(t->pos.nodes);
+    for (size_t i = 0; i < activeThreads; ++i)
+        total += static_cast<uint64_t>(threads_[i]->pos.nodes.load(std::memory_order_relaxed));
     return total;
 }
 
-void ThreadPool::startThinking(Position& rootPos, int maxDepth, int timeMs, bool ponderMode) {
+void ThreadPool::startThinking(Position& rootPos, int maxDepth, int timeMs, bool ponderMode,
+                               bool infiniteMode) {
     // Wait for any previous search to complete
     stopAndWait();
 
     // Store search parameters
-    searchMaxDepth = maxDepth;
+    searchMaxDepth = std::clamp(maxDepth, 1, MAX_PLY);
+    infinite = infiniteMode;
+    cancelledPonder = false;
+    activeThreads = TimeMgr.allowsHelperThreads(timeMs) ? threads_.size() : 1;
     searchTimeMs.store(timeMs, std::memory_order_release);
     stop.store(false, std::memory_order_relaxed);
     ponder.store(ponderMode, std::memory_order_relaxed);
 
-    auto startTime = std::chrono::high_resolution_clock::now();
+    auto startTime = std::chrono::steady_clock::now();
 
     // Copy root position to all threads
-    for (auto* t : threads_) {
+    for (size_t i = 0; i < activeThreads; ++i) {
+        auto* t = threads_[i];
         t->pos = rootPos;      // Copy position state
         t->pos.thread = t;     // Set thread ownership
         t->pos.stopSearching = false;
@@ -591,6 +655,7 @@ void ThreadPool::startThinking(Position& rootPos, int maxDepth, int timeMs, bool
         t->completedDepth = 0;
         t->completedPV.clear();
         t->hasCompletedIteration = false;
+        t->completedAverageScore = -INF_SCORE;
         t->bestMoveChanges.store(0, std::memory_order_relaxed);
 #ifdef ENABLE_SEARCH_STATS
         t->searchStats.clear();

@@ -5,6 +5,13 @@ title Deep Becky 3.0 - Central de Compilacao
 :: Definir pasta da engine como o diretorio atual
 set "ENGINE_DIR=%~dp0"
 
+:: Suporte a chamadas diretas de sub-rotinas (ex: call build.bat :EXECUTE_ENGINE_TEST startpos "movetime 2000")
+if not "%~1"=="" (
+    set "_TARGET_LABEL=%~1"
+    shift
+    goto !_TARGET_LABEL!
+)
+
 :: Localizar o MSYS2
 set "MSYS2_SHELL="
 if exist "C:\msys64\msys2_shell.cmd" set "MSYS2_SHELL=C:\msys64\msys2_shell.cmd"
@@ -234,17 +241,7 @@ echo ===========================================================================
 echo  TESTE: POSICAO INICIAL COM 10 SEGUNDOS (go movetime 10000)
 echo ===============================================================================
 echo.
-cd /d "%ENGINE_DIR%"
-(
-  echo uci
-  echo isready
-  echo position startpos
-  echo go movetime 10000
-  echo isready
-  echo quit
-) > deepbecky_test.tmp
-DeepBecky_3.0.exe < deepbecky_test.tmp
-if exist deepbecky_test.tmp del /q deepbecky_test.tmp
+call :EXECUTE_ENGINE_TEST "startpos" "movetime 10000"
 echo.
 echo ===============================================================================
 echo Teste concluido!
@@ -264,17 +261,7 @@ set /a USER_MS=USER_SECS*1000
 echo.
 echo Executando busca na posicao inicial por %USER_SECS% segundos (%USER_MS% ms)...
 echo.
-cd /d "%ENGINE_DIR%"
-(
-  echo uci
-  echo isready
-  echo position startpos
-  echo go movetime !USER_MS!
-  echo isready
-  echo quit
-) > deepbecky_test.tmp
-DeepBecky_3.0.exe < deepbecky_test.tmp
-if exist deepbecky_test.tmp del /q deepbecky_test.tmp
+call :EXECUTE_ENGINE_TEST "startpos" "movetime !USER_MS!"
 echo.
 echo ===============================================================================
 echo Teste concluido!
@@ -293,17 +280,7 @@ if not defined USER_DEPTH set "USER_DEPTH=15"
 echo.
 echo Executando busca na posicao inicial ate a profundidade %USER_DEPTH%...
 echo.
-cd /d "%ENGINE_DIR%"
-(
-  echo uci
-  echo isready
-  echo position startpos
-  echo go depth !USER_DEPTH!
-  echo isready
-  echo quit
-) > deepbecky_test.tmp
-DeepBecky_3.0.exe < deepbecky_test.tmp
-if exist deepbecky_test.tmp del /q deepbecky_test.tmp
+call :EXECUTE_ENGINE_TEST "startpos" "depth !USER_DEPTH!"
 echo.
 echo ===============================================================================
 echo Teste concluido!
@@ -317,17 +294,7 @@ echo  TESTE: POSICAO TATICA COMPLEXA (KIWIPETE) - 10 SEGUNDOS
 echo  FEN: r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -
 echo ===============================================================================
 echo.
-cd /d "%ENGINE_DIR%"
-(
-  echo uci
-  echo isready
-  echo position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -
-  echo go movetime 10000
-  echo isready
-  echo quit
-) > deepbecky_test.tmp
-DeepBecky_3.0.exe < deepbecky_test.tmp
-if exist deepbecky_test.tmp del /q deepbecky_test.tmp
+call :EXECUTE_ENGINE_TEST "fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -" "movetime 10000"
 echo.
 echo ===============================================================================
 echo Teste concluido!
@@ -341,22 +308,22 @@ echo  TESTE: FINAL DE PARTIDA (TORRES E PEOES) - 10 SEGUNDOS
 echo  FEN: 8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -
 echo ===============================================================================
 echo.
-cd /d "%ENGINE_DIR%"
-(
-  echo uci
-  echo isready
-  echo position fen 8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -
-  echo go movetime 10000
-  echo isready
-  echo quit
-) > deepbecky_test.tmp
-DeepBecky_3.0.exe < deepbecky_test.tmp
-if exist deepbecky_test.tmp del /q deepbecky_test.tmp
+call :EXECUTE_ENGINE_TEST "fen 8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -" "movetime 10000"
 echo.
 echo ===============================================================================
 echo Teste concluido!
 pause
 goto TEST_MENU
+
+:EXECUTE_ENGINE_TEST
+set "DEEPBECKY_EXE=%ENGINE_DIR%DeepBecky_3.0.exe"
+set "DEEPBECKY_POS=%~1"
+set "DEEPBECKY_GO=%~2"
+cd /d "%ENGINE_DIR%"
+
+:: Execucao 100% autonoma via PowerShell nativo do Windows (sem scripts auxiliares)
+powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwAKACQARQBuAGcAaQBuAGUAIAA9ACAAWwBFAG4AdgBpAHIAbwBuAG0AZQBuAHQAXQA6ADoARwBlAHQARQBuAHYAaQByAG8AbgBtAGUAbgB0AFYAYQByAGkAYQBiAGwAZQAoACcARABFAEUAUABCAEUAQwBLAFkAXwBFAFgARQAnACkACgAkAFAAbwBzACAAPQAgAFsARQBuAHYAaQByAG8AbgBtAGUAbgB0AF0AOgA6AEcAZQB0AEUAbgB2AGkAcgBvAG4AbQBlAG4AdABWAGEAcgBpAGEAYgBsAGUAKAAnAEQARQBFAFAAQgBFAEMASwBZAF8AUABPAFMAJwApAAoAJABHAG8AIAA9ACAAWwBFAG4AdgBpAHIAbwBuAG0AZQBuAHQAXQA6ADoARwBlAHQARQBuAHYAaQByAG8AbgBtAGUAbgB0AFYAYQByAGkAYQBiAGwAZQAoACcARABFAEUAUABCAEUAQwBLAFkAXwBHAE8AJwApAAoACgAkAGUAbgBnAGkAbgBlAFAAYQB0AGgAIAA9ACAAKABSAGUAcwBvAGwAdgBlAC0AUABhAHQAaAAgACQARQBuAGcAaQBuAGUAKQAuAFAAYQB0AGgACgAkAHcAbwByAGsAaQBuAGcARABpAHIAIAA9ACAAUwBwAGwAaQB0AC0AUABhAHQAaAAgACQAZQBuAGcAaQBuAGUAUABhAHQAaAAKAAoAJABwAHMAaQAgAD0AIABOAGUAdwAtAE8AYgBqAGUAYwB0ACAAUwB5AHMAdABlAG0ALgBEAGkAYQBnAG4AbwBzAHQAaQBjAHMALgBQAHIAbwBjAGUAcwBzAFMAdABhAHIAdABJAG4AZgBvAAoAJABwAHMAaQAuAEYAaQBsAGUATgBhAG0AZQAgAD0AIAAkAGUAbgBnAGkAbgBlAFAAYQB0AGgACgAkAHAAcwBpAC4AVwBvAHIAawBpAG4AZwBEAGkAcgBlAGMAdABvAHIAeQAgAD0AIAAkAHcAbwByAGsAaQBuAGcARABpAHIACgAkAHAAcwBpAC4AVQBzAGUAUwBoAGUAbABsAEUAeABlAGMAdQB0AGUAIAA9ACAAJABmAGEAbABzAGUACgAkAHAAcwBpAC4AUgBlAGQAaQByAGUAYwB0AFMAdABhAG4AZABhAHIAZABJAG4AcAB1AHQAIAA9ACAAJAB0AHIAdQBlAAoAJABwAHMAaQAuAFIAZQBkAGkAcgBlAGMAdABTAHQAYQBuAGQAYQByAGQATwB1AHQAcAB1AHQAIAA9ACAAJAB0AHIAdQBlAAoACgAkAHAAcgBvAGMAIAA9ACAAWwBTAHkAcwB0AGUAbQAuAEQAaQBhAGcAbgBvAHMAdABpAGMAcwAuAFAAcgBvAGMAZQBzAHMAXQA6ADoAUwB0AGEAcgB0ACgAJABwAHMAaQApAAoACgAkAHAAQwBtAGQAIAA9ACAAaQBmACAAKAAkAFAAbwBzAC4AVAByAGkAbQAoACkALgBTAHQAYQByAHQAcwBXAGkAdABoACgAIgBwAG8AcwBpAHQAaQBvAG4AIAAiACkAKQAgAHsAIAAkAFAAbwBzACAAfQAgAGUAbABzAGUAIAB7ACAAIgBwAG8AcwBpAHQAaQBvAG4AIAAiACAAKwAgACQAUABvAHMAIAB9AAoAJABnAEMAbQBkACAAPQAgAGkAZgAgACgAJABHAG8ALgBUAHIAaQBtACgAKQAuAFMAdABhAHIAdABzAFcAaQB0AGgAKAAiAGcAbwAgACIAKQApACAAewAgACQARwBvACAAfQAgAGUAbABzAGUAIAB7ACAAIgBnAG8AIAAiACAAKwAgACQARwBvACAAfQAKAAoAJABwAHIAbwBjAC4AUwB0AGEAbgBkAGEAcgBkAEkAbgBwAHUAdAAuAFcAcgBpAHQAZQBMAGkAbgBlACgAIgB1AGMAaQAiACkACgAkAHAAcgBvAGMALgBTAHQAYQBuAGQAYQByAGQASQBuAHAAdQB0AC4AVwByAGkAdABlAEwAaQBuAGUAKAAiAGkAcwByAGUAYQBkAHkAIgApAAoAJABwAHIAbwBjAC4AUwB0AGEAbgBkAGEAcgBkAEkAbgBwAHUAdAAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABwAEMAbQBkACkACgAkAHAAcgBvAGMALgBTAHQAYQBuAGQAYQByAGQASQBuAHAAdQB0AC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAGcAQwBtAGQAKQAKACQAcAByAG8AYwAuAFMAdABhAG4AZABhAHIAZABJAG4AcAB1AHQALgBGAGwAdQBzAGgAKAApAAoACgB3AGgAaQBsAGUAIAAoAC0AbgBvAHQAIAAkAHAAcgBvAGMALgBTAHQAYQBuAGQAYQByAGQATwB1AHQAcAB1AHQALgBFAG4AZABPAGYAUwB0AHIAZQBhAG0AKQAgAHsACgAgACAAIAAgACQAbABpAG4AZQAgAD0AIAAkAHAAcgBvAGMALgBTAHQAYQBuAGQAYQByAGQATwB1AHQAcAB1AHQALgBSAGUAYQBkAEwAaQBuAGUAKAApAAoAIAAgACAAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoAVwByAGkAdABlAEwAaQBuAGUAKAAkAGwAaQBuAGUAKQAKACAAIAAgACAAaQBmACAAKAAkAGwAaQBuAGUALgBUAHIAaQBtACgAKQAuAFMAdABhAHIAdABzAFcAaQB0AGgAKAAiAGIAZQBzAHQAbQBvAHYAZQAiACkAKQAgAHsAIABiAHIAZQBhAGsAIAB9AAoAfQAKAAoAdAByAHkAIAB7AAoAIAAgACAAIAAkAHAAcgBvAGMALgBTAHQAYQBuAGQAYQByAGQASQBuAHAAdQB0AC4AVwByAGkAdABlAEwAaQBuAGUAKAAiAHEAdQBpAHQAIgApAAoAIAAgACAAIAAkAHAAcgBvAGMALgBTAHQAYQBuAGQAYQByAGQASQBuAHAAdQB0AC4ARgBsAHUAcwBoACgAKQAKACAAIAAgACAAJABwAHIAbwBjAC4AVwBhAGkAdABGAG8AcgBFAHgAaQB0ACgAMwAwADAAMAApAAoAfQAgAGMAYQB0AGMAaAAgAHsAfQAKAAoAaQBmACAAKAAtAG4AbwB0ACAAJABwAHIAbwBjAC4ASABhAHMARQB4AGkAdABlAGQAKQAgAHsAIAAkAHAAcgBvAGMALgBLAGkAbABsACgAKQAgAH0ACgBbAEUAbgB2AGkAcgBvAG4AbQBlAG4AdABdADoAOgBFAHgAaQB0ACgAMAApAA==
+goto :eof
 
 :TEST_PERFT
 cls

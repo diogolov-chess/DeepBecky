@@ -28,23 +28,8 @@ struct MovePickerBuffer {
 // Each thread owns its own Position copy and per-thread heuristic tables.
 // Threads communicate only through the shared TT (lockless).
 struct alignas(64) SearchThread {
-    void* operator new(size_t size) {
-#ifdef _WIN32
-        return _aligned_malloc(size, 64);
-#else
-        void* ptr = nullptr;
-        posix_memalign(&ptr, 64, size);
-        return ptr;
-#endif
-    }
-
-    void operator delete(void* ptr) noexcept {
-#ifdef _WIN32
-        _aligned_free(ptr);
-#else
-        free(ptr);
-#endif
-    }
+    // C++17 aligned new/delete preserve alignas(64) and report allocation
+    // failure to the transactional pool builder (thread.cpp enables exceptions).
 
     Position pos;
     size_t idx;
@@ -80,6 +65,7 @@ struct alignas(64) SearchThread {
     // with a PV from an iteration interrupted by stop/time.
     std::vector<Move> completedPV;
     bool hasCompletedIteration = false;
+    int completedAverageScore = -INF_SCORE;
 
     std::atomic<uint64_t> bestMoveChanges{0};  // How many times best move changed this iteration
     double previousTimeReduction = 1.0;        // Persisted across moves (momentum)
@@ -89,7 +75,8 @@ struct alignas(64) SearchThread {
     // Thread management
     std::mutex mtx;
     std::condition_variable cv;
-    bool searching = false;
+    // Constructor waits for the worker's first transition to idle.
+    bool searching = true;
     bool exitFlag = false;
     std::thread nativeThread;
 
@@ -113,6 +100,9 @@ public:
 
     // Search parameters (set by cmdGo before waking main thread)
     int searchMaxDepth = 64;
+    size_t activeThreads = 0; // Immutable while workers run.
+    bool infinite = false;   // Protected by main()->mtx when releasing output.
+    bool cancelledPonder = false; // Same mutex; do not retain hypothetical scores.
     // Updated by ponderhit while the search is active.
     std::atomic<int> searchTimeMs{0};
 
@@ -126,14 +116,15 @@ public:
 
     ~ThreadPool();
 
-    void set(size_t num);
+    bool set(size_t num);
     void clear();
     void waitForSearchFinished();
     void stopAndWait();
     void ponderHit();
 
     // Setup all threads with root position, then start main thread
-    void startThinking(Position& rootPos, int maxDepth, int timeMs, bool ponderMode = false);
+    void startThinking(Position& rootPos, int maxDepth, int timeMs, bool ponderMode = false,
+                       bool infiniteMode = false);
 
     SearchThread* main() const { return threads_.empty() ? nullptr : threads_[0]; }
     SearchThread* at(size_t i) const { return threads_[i]; }
@@ -143,5 +134,13 @@ public:
 };
 
 extern ThreadPool Threads;
+
+#ifdef DEEPBECKY_TEST_HOOKS
+namespace ThreadTestHooks {
+extern std::atomic<void(*)()> beforeIdle;
+extern std::atomic<void(*)()> beforeOutputWait;
+extern std::atomic<int> failCreationAt;
+}
+#endif
 
 #endif // DEEPBECKY_THREAD_H

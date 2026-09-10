@@ -8,6 +8,8 @@
 #include <iostream>
 #include <cctype>
 #include <random>
+#include <charconv>
+#include <limits>
 
 // ========================= Zobrist =========================
 Zobrist::Zobrist() {
@@ -27,6 +29,19 @@ Zobrist ZOB;
 // ========================= SEE Helpers =========================
 namespace {
 
+// The compact state parsed before committing a FEN; no search/NNUE stack copy.
+struct FenState {
+    U64 bitboards[PIECE_NB]{};
+    U64 color_bitboards[COLOR_NB]{};
+    int piece_board[64]{};
+    int king_sq[COLOR_NB]{-1, -1};
+    bool white_to_move = true;
+    int castling = 0;
+    int ep_file = 0;
+    int halfmove = 0;
+    int fullmove = 1;
+};
+
 // Fast attackers calculation - returns all attackers to a square
 // This is used by the optimized SEE function
 U64 allAttackersTo(int sq, U64 occ, const U64 pieces[PIECE_NB]) {
@@ -45,6 +60,30 @@ U64 allAttackersTo(int sq, U64 occ, const U64 pieces[PIECE_NB]) {
     U64 rooksQueens = pieces[WROOK] | pieces[WQUEEN] | pieces[BROOK] | pieces[BQUEEN];
     attackers |= rooksQueens & Magic::rookAttacks(sq, occ);
     return attackers;
+}
+
+// EP affects position identity only if the side to move can legally capture.
+// Used with both the temporary FEN board and the completed double-push board.
+int canonicalEpFile(int file, bool white, const U64 pieces[PIECE_NB],
+                    const U64 colors[COLOR_NB], const int kings[COLOR_NB]) {
+    if (file < 1 || file > 8) return 0;
+    const int us = white ? WHITE : BLACK;
+    const int them = us ^ 1;
+    const int target = sq(file - 1, white ? 5 : 2);
+    const int captured = target + (white ? -8 : 8);
+    const int origin = target + (white ? 8 : -8);
+    const U64 occupied = colors[WHITE] | colors[BLACK];
+    if ((occupied & (square_bb(target) | square_bb(origin))) ||
+        !(pieces[white ? BPAWN : WPAWN] & square_bb(captured))) return 0;
+    U64 candidates = pieces[white ? WPAWN : BPAWN] &
+                     (white ? BPAWN_ATK_BB[target] : WPAWN_ATK_BB[target]);
+    const U64 enemyAfter = colors[them] & ~square_bb(captured);
+    while (candidates) {
+        const int from = pop_lsb(&candidates);
+        const U64 after = (occupied & ~square_bb(from) & ~square_bb(captured)) | square_bb(target);
+        if (!(allAttackersTo(kings[us], after, pieces) & enemyAfter)) return file;
+    }
+    return 0;
 }
 
 inline void ensureCurrentNNUEState(Position& pos) {
@@ -92,8 +131,9 @@ Position::Position(const Position& other) {
     std::memcpy(rootMoveEffort, other.rootMoveEffort, sizeof(rootMoveEffort));
     std::memcpy(rootMoveAvgScore, other.rootMoveAvgScore, sizeof(rootMoveAvgScore));
     rootMoveCount = other.rootMoveCount;
-    nnueStack = other.nnueStack;
-    std::memcpy(undoStack, other.undoStack, sizeof(undoStack));
+    nnueStack.resize(other.nnueStack.size());
+    std::copy_n(other.nnueStack.begin(), other.undoTop + 1, nnueStack.begin());
+    std::memcpy(undoStack, other.undoStack, sizeof(Undo) * other.undoTop);
     undoTop = other.undoTop;
     rootPV = other.rootPV;
 }
@@ -128,8 +168,10 @@ Position& Position::operator=(const Position& other) {
     std::memcpy(rootMoveEffort, other.rootMoveEffort, sizeof(rootMoveEffort));
     std::memcpy(rootMoveAvgScore, other.rootMoveAvgScore, sizeof(rootMoveAvgScore));
     rootMoveCount = other.rootMoveCount;
-    nnueStack = other.nnueStack;
-    std::memcpy(undoStack, other.undoStack, sizeof(undoStack));
+    if (nnueStack.size() != other.nnueStack.size())
+        nnueStack.resize(other.nnueStack.size());
+    std::copy_n(other.nnueStack.begin(), other.undoTop + 1, nnueStack.begin());
+    std::memcpy(undoStack, other.undoStack, sizeof(Undo) * other.undoTop);
     undoTop = other.undoTop;
     rootPV = other.rootPV;
     return *this;
@@ -147,7 +189,7 @@ uint64_t Position::computeHash() const {
     }
     if (!white_to_move) h ^= ZOB.side;
     h ^= ZOB.castling[castling & 15];
-    h ^= ZOB.ep[ep_file & 15];
+    if (ep_file > 0) h ^= ZOB.ep[ep_file];
     return h;
 }
 
@@ -164,7 +206,8 @@ bool Position::setFEN(const std::string& fen) {
     std::string token;
     std::stringstream ss(fen);
     while (ss >> token) {
-        if (tokens.size() < 6) tokens.push_back(token);
+        if (tokens.size() == 6) return false;
+        tokens.push_back(token);
     }
 
     if (tokens.size() < 4) return false;
@@ -172,9 +215,7 @@ bool Position::setFEN(const std::string& fen) {
         tokens.push_back(tokens.size() == 4 ? "0" : "1");
     }
 
-    std::memset(bitboards, 0, sizeof(bitboards));
-    std::memset(color_bitboards, 0, sizeof(color_bitboards));
-    std::memset(piece_board, EMPTY, sizeof(piece_board));
+    FenState parsed;
 
     const std::string& placements = tokens[0];
     const std::string& side = tokens[1];
@@ -193,57 +234,67 @@ bool Position::setFEN(const std::string& fen) {
 
     int file = 0;
     int rank = 7;
-    king_sq[WHITE] = -1;
-    king_sq[BLACK] = -1;
+    bool previousDigit = false;
+    parsed.king_sq[WHITE] = -1;
+    parsed.king_sq[BLACK] = -1;
 
     for (char c : placements) {
         if (c == '/') {
             if (file != 8) return false;
             if (--rank < 0) return false;
             file = 0;
+            previousDigit = false;
             continue;
         }
         if (c >= '1' && c <= '8') {
+            if (previousDigit) return false;
+            previousDigit = true;
             file += c - '0';
             if (file > 8) return false;
             continue;
         }
         int piece = charToPiece(c);
+        previousDigit = false;
         if (piece == EMPTY) return false;
         if (file >= 8 || rank < 0) return false;
         int sqi = sq(file, rank);
-        set_bit(bitboards[piece], sqi);
-        piece_board[sqi] = piece;
-        if (isWhitePiece(piece)) set_bit(color_bitboards[WHITE], sqi);
-        else set_bit(color_bitboards[BLACK], sqi);
-        if (piece == WKING) king_sq[WHITE] = sqi;
-        if (piece == BKING) king_sq[BLACK] = sqi;
+        if ((piece == WKING && parsed.king_sq[WHITE] >= 0) ||
+            (piece == BKING && parsed.king_sq[BLACK] >= 0)) return false;
+        if ((piece == WPAWN || piece == BPAWN) && (rank == 0 || rank == 7)) return false;
+        set_bit(parsed.bitboards[piece], sqi);
+        parsed.piece_board[sqi] = piece;
+        if (isWhitePiece(piece)) set_bit(parsed.color_bitboards[WHITE], sqi);
+        else set_bit(parsed.color_bitboards[BLACK], sqi);
+        if (piece == WKING) parsed.king_sq[WHITE] = sqi;
+        if (piece == BKING) parsed.king_sq[BLACK] = sqi;
         ++file;
     }
 
     if (rank != 0 || file != 8) return false;
-    if (king_sq[WHITE] < 0 || king_sq[BLACK] < 0) return false;
+    if (parsed.king_sq[WHITE] < 0 || parsed.king_sq[BLACK] < 0) return false;
 
-    if (side.empty()) return false;
-    char sideChar = static_cast<char>(std::tolower(static_cast<unsigned char>(side[0])));
-    if (sideChar == 'w') white_to_move = true;
-    else if (sideChar == 'b') white_to_move = false;
+    if (side != "w" && side != "b") return false;
+    const char sideChar = side[0];
+    if (sideChar == 'w') parsed.white_to_move = true;
+    else if (sideChar == 'b') parsed.white_to_move = false;
     else return false;
 
-    castling = 0;
+    parsed.castling = 0;
     if (castl_str != "-") {
         for (char c : castl_str) {
+            const int previous = parsed.castling;
             switch (c) {
-                case 'K': castling |= 8; break;
-                case 'Q': castling |= 4; break;
-                case 'k': castling |= 2; break;
-                case 'q': castling |= 1; break;
+                case 'K': parsed.castling |= 8; break;
+                case 'Q': parsed.castling |= 4; break;
+                case 'k': parsed.castling |= 2; break;
+                case 'q': parsed.castling |= 1; break;
                 default: return false;
             }
+            if (parsed.castling == previous) return false;
         }
     }
 
-    ep_file = 0;
+    parsed.ep_file = 0;
     if (ep_str != "-") {
         if (ep_str.size() != 2) return false;
         char fileChar = ep_str[0];
@@ -252,28 +303,49 @@ bool Position::setFEN(const std::string& fen) {
         if (rankChar < '1' || rankChar > '8') return false;
         int fileIdx = fileChar - 'a';
         int rankIdx = rankChar - '1';
-        if (rankChar == '3' || rankChar == '6') {
-            int expectedRank = white_to_move ? 5 : 2;
-            if (rankIdx == expectedRank) ep_file = fileIdx + 1;
-        }
+        const int expectedRank = parsed.white_to_move ? 5 : 2;
+        if (rankIdx != expectedRank) return false;
+        parsed.ep_file = fileIdx + 1;
     }
 
-    auto parseUnsigned = [](const std::string& s, int fallback) -> int {
-        if (s.empty()) return fallback;
-        int value = 0;
-        for (char ch : s) {
-            if (ch < '0' || ch > '9') return fallback;
-            value = value * 10 + (ch - '0');
-            if (value < 0) return fallback;
-        }
-        return value;
+    auto parseUnsigned = [](const std::string& s, int& value) {
+        if (s.empty() || s.front() < '0' || s.front() > '9') return false;
+        const auto result = std::from_chars(s.data(), s.data() + s.size(), value);
+        return result.ec == std::errc{} && result.ptr == s.data() + s.size();
     };
+    if (!parseUnsigned(tokens[4], parsed.halfmove) ||
+        !parseUnsigned(tokens[5], parsed.fullmove) || parsed.fullmove < 1) return false;
 
-    halfmove = parseUnsigned(tokens[4], 0);
-    if (halfmove < 0) halfmove = 0;
+    const U64 occupied = parsed.color_bitboards[WHITE] | parsed.color_bitboards[BLACK];
+    const int us = parsed.white_to_move ? WHITE : BLACK;
+    // The side that just moved cannot have left its own king attacked.
+    if (allAttackersTo(parsed.king_sq[us ^ 1], occupied, parsed.bitboards) &
+        parsed.color_bitboards[us]) return false;
+    for (int sideIndex = WHITE; sideIndex <= BLACK; ++sideIndex) {
+        if (popcount(parsed.color_bitboards[sideIndex]) > 16 ||
+            popcount(parsed.bitboards[sideIndex == WHITE ? WPAWN : BPAWN]) > 8) return false;
+    }
 
-    fullmove = parseUnsigned(tokens[5], 1);
-    if (fullmove < 1) fullmove = 1;
+    // Sanitize stale special rights rather than inventing missing pieces.
+    if (parsed.piece_board[4] != WKING) parsed.castling &= ~12;
+    if (parsed.piece_board[60] != BKING) parsed.castling &= ~3;
+    if (parsed.piece_board[7] != WROOK) parsed.castling &= ~8;
+    if (parsed.piece_board[0] != WROOK) parsed.castling &= ~4;
+    if (parsed.piece_board[63] != BROOK) parsed.castling &= ~2;
+    if (parsed.piece_board[56] != BROOK) parsed.castling &= ~1;
+    parsed.ep_file = canonicalEpFile(parsed.ep_file, parsed.white_to_move,
+                                    parsed.bitboards, parsed.color_bitboards, parsed.king_sq);
+
+    // All validation succeeded. Only now replace the live board and histories.
+    std::memcpy(bitboards, parsed.bitboards, sizeof(bitboards));
+    std::memcpy(color_bitboards, parsed.color_bitboards, sizeof(color_bitboards));
+    std::memcpy(piece_board, parsed.piece_board, sizeof(piece_board));
+    std::memcpy(king_sq, parsed.king_sq, sizeof(king_sq));
+    white_to_move = parsed.white_to_move;
+    castling = parsed.castling;
+    ep_file = parsed.ep_file;
+    halfmove = parsed.halfmove;
+    fullmove = parsed.fullmove;
 
     undoTop = 0;
     hash = computeHash();
@@ -474,10 +546,12 @@ void Position::makeMove(const Move& m) {
     }
 
     if (piece == WPAWN || piece == BPAWN || moveIsCapture(m)) halfmove = 0;
-    else halfmove++;
-    if (!white_to_move) fullmove++;
+    else if (halfmove < std::numeric_limits<int>::max()) ++halfmove;
+    if (!white_to_move && fullmove < std::numeric_limits<int>::max()) ++fullmove;
 
     white_to_move = !white_to_move;
+    if (ep_file > 0)
+        ep_file = canonicalEpFile(ep_file, white_to_move, bitboards, color_bitboards, king_sq);
     hash ^= ZOB.castling[castling & 15];
     if (ep_file > 0) hash ^= ZOB.ep[ep_file & 15];
 
@@ -593,7 +667,7 @@ void Position::makeNullMove() {
     nnueStack[undoTop].capturedPiece = EMPTY;
     white_to_move = !white_to_move;
     hash ^= ZOB.side;
-    halfmove++;
+    if (halfmove < std::numeric_limits<int>::max()) ++halfmove;
     plies_since_null = 0;
 
     int repetitionValue = 0;

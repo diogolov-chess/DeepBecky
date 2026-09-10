@@ -27,7 +27,7 @@ int main(int argc, char *argv[]) {
   Search::init();
 
   // Initialize thread pool (4 threads default)
-  Threads.set(4);
+  if (!Threads.set(4)) return 1;
 
   // Create engine instance and enter UCI loop
   Position engine;

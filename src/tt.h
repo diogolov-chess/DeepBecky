@@ -156,6 +156,7 @@ public:
 
     void resize(size_t sizeMB);
     void clear();
+    void setClearThreadCount(size_t count) { clearThreadCount_ = std::clamp(count, size_t(1), size_t(16)); }
 
     void newSearch() { generation8_ += GEN_DELTA; }
     uint8_t generation() const { return generation8_; }
@@ -184,6 +185,7 @@ private:
     TTCluster* table_ = nullptr;
     size_t clusterCount_ = 0;
     uint8_t generation8_ = 0;
+    size_t clearThreadCount_ = 1;
     bool isLargePageAllocated_ = false;
 };
 

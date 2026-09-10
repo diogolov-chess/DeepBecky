@@ -6,6 +6,7 @@
 #include "thread.h"
 #include "timeman.h"
 #include "tt.h"
+#include "ucioutput.h"
 
 #include <algorithm>
 #include <chrono>
@@ -221,7 +222,7 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
   if (stopSearching)
     return alpha;
 
-  nodes++;
+  nodes.store(nodes.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 
   // Periodic stop check (every 2047 nodes)
   if ((nodes & 0x7FF) == 0) {
@@ -457,7 +458,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
   // Check extensions are assigned selectively in the main move loop after
   // the child position is available and givesCheck can be computed exactly.
 
-  nodes++;
+  nodes.store(nodes.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 
   // Update selective depth
   if (ply > selDepth)
@@ -1394,7 +1395,7 @@ Move Position::search(int maxDepth, int timeMs) {
   stopSearching = false;
   rootPV.clear();
 
-  start_time = std::chrono::high_resolution_clock::now();
+  start_time = std::chrono::steady_clock::now();
   time_limit_ms = timeMs;
 
   // ponderhit is asynchronous. The per-position limit remains the immutable
@@ -1483,15 +1484,16 @@ Move Position::search(int maxDepth, int timeMs) {
       makeMove(onlyMove);
       int score = -qsearch(-INF_SCORE, INF_SCORE, child);
       undoMove(onlyMove);
-      nodes++;
+      nodes.store(nodes.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 
-      auto now_time = std::chrono::high_resolution_clock::now();
+      auto now_time = std::chrono::steady_clock::now();
       long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                          now_time - start_time)
                          .count();
       if (ms == 0)
         ms = 1;
 
+      UCI::OutputLock outputLock(UCI::outputMutex());
       std::cout << "info depth 1 seldepth " << selDepth << " "
                 << Search::uciScore(score) << " time "
                 << ms << " nodes " << nodes << " nps " << (nodes * 1000 / ms)
@@ -1543,9 +1545,8 @@ Move Position::search(int maxDepth, int timeMs) {
   for (int i = 0; i < numLegalMoves; i++)
     rootMoveAvgScore[i] = -INF_SCORE;
 
-  // Reset bestMoveChanges for this search
-  if (thread)
-    thread->bestMoveChanges.store(0, std::memory_order_relaxed);
+  // The pool resets counters before waking workers; never erase a concurrent
+  // increment while the main thread consumes the counters.
 
   for (int d = 1; d <= effectiveMaxDepth && !stopSearching; d++) {
     if (isMainThread)
@@ -1683,7 +1684,7 @@ Move Position::search(int maxDepth, int timeMs) {
       // didn't have time to resolve. DO NOT print it to the UCI to avoid
       // fake "blunder" illusions in the GUI.
       if (isMainThread && !(stopSearching && score < prevScore - 50)) {
-        auto now = std::chrono::high_resolution_clock::now();
+        auto now = std::chrono::steady_clock::now();
         long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                            now - start_time)
                            .count();
@@ -1694,6 +1695,7 @@ Move Position::search(int maxDepth, int timeMs) {
 
         std::string pvStr = pvToString(pvLine);
 
+        UCI::OutputLock outputLock(UCI::outputMutex());
         std::cout << "info depth " << d << " seldepth " << selDepth;
 
         std::cout << " " << Search::uciScore(score);
@@ -1733,6 +1735,10 @@ Move Position::search(int maxDepth, int timeMs) {
       thread->completedDepth = d;
       thread->completedPV = rootPV;
       thread->hasCompletedIteration = true;
+      thread->completedAverageScore = prevScore;
+      for (int i = 0; i < numLegalMoves; ++i)
+        if (legalMoves[i] == best && rootMoveAvgScore[i] > -INF_SCORE)
+          thread->completedAverageScore = rootMoveAvgScore[i];
     }
 
     // ================================================================
@@ -1751,8 +1757,7 @@ Move Position::search(int maxDepth, int timeMs) {
       // Aggregate bestMoveChanges from all threads
       for (size_t t = 0; t < Threads.size(); t++) {
         totBestMoveChanges += static_cast<double>(
-            Threads.at(t)->bestMoveChanges.load(std::memory_order_relaxed));
-        Threads.at(t)->bestMoveChanges.store(0, std::memory_order_relaxed);
+            Threads.at(t)->bestMoveChanges.exchange(0, std::memory_order_relaxed));
       }
 
       // Never stop before minimum depth
@@ -1772,7 +1777,7 @@ Move Position::search(int maxDepth, int timeMs) {
             break;
           }
         }
-        uint64_t totalNodesNow = Threads.nodes_searched();
+        uint64_t totalNodesNow = static_cast<uint64_t>(nodes.load(std::memory_order_relaxed));
         uint64_t nodesEffort =
             bestMoveNodeCount * 100000 / std::max(uint64_t(1), totalNodesNow);
 
@@ -1881,7 +1886,10 @@ Move Position::search(int maxDepth, int timeMs) {
 
 std::string Position::pvToString(const std::vector<Move> &pv) {
   std::ostringstream ss;
-  Position temp = *this; // Create a copy of the root position
+  // This worker owns its board exclusively. Validate on it and unwind, rather
+  // than allocating/copying a full NNUE stack for each printed iteration.
+  Position& temp = *this;
+  std::vector<Move> applied;
 
   for (auto &m : pv) {
     if (moveIsNone(m))
@@ -1904,7 +1912,11 @@ std::string Position::pvToString(const std::vector<Move> &pv) {
 
     ss << temp.moveToUCI(matchedMove) << " ";
     temp.makeMove(matchedMove); // execute with canonical legal flags (castling, ep, etc.)
+    applied.push_back(matchedMove);
   }
+
+  for (auto it = applied.rbegin(); it != applied.rend(); ++it)
+    temp.undoMove(*it);
 
   std::string result = ss.str();
   if (!result.empty() && result.back() == ' ') {

@@ -1,4 +1,5 @@
 #include "uci.h"
+#include "ucioutput.h"
 #include "evaluate.h"
 #include "movegen.h"
 #include "nnue.h"
@@ -33,6 +34,7 @@ std::string toLower(const std::string &str) {
 // UCI Protocol Handlers
 // ============================================================================
 void cmdUci() {
+  OutputLock outputLock(outputMutex());
   std::cout << "id name " << ENGINE_VERSION << std::endl;
   std::cout << "id author Diogo de Oliveira Almeida" << std::endl;
   if (NNUE::isReady())
@@ -131,10 +133,7 @@ void cmdUci() {
 }
 
 void cmdIsReady() {
-  // Preserve the historical depth-search barrier used by the PGO workload,
-  // but never block forever on an active ponder search.
-  if (!Threads.ponder.load(std::memory_order_acquire))
-    Threads.waitForSearchFinished();
+  OutputLock outputLock(outputMutex());
   std::cout << "readyok" << std::endl;
   std::cout.flush();
 }
@@ -392,16 +391,16 @@ void cmdGo(Position &engine, std::istringstream &is) {
   // Set search parameters
   int maxDepth = (limits.depth > 0 ? limits.depth : MAX_PLY);
   int searchTime = static_cast<int>(TimeMgr.maximum());
+  if (limits.infinite) searchTime = 0;
 
   // In ponder mode, search without time limit until ponderhit or stop
   if (ponderMode) {
     searchTime = 0; // No time limit during pondering
-    maxDepth = MAX_PLY;
   }
 
   // Start async search via ThreadPool
   // The main search thread will print bestmove when done
-  Threads.startThinking(engine, maxDepth, searchTime, ponderMode);
+  Threads.startThinking(engine, maxDepth, searchTime, ponderMode, limits.infinite);
 }
 
 void cmdStop() {
@@ -418,7 +417,7 @@ void cmdPerft(Position &engine, std::istringstream &is) {
   if (perftDepth < 1)
     perftDepth = 1;
 
-  auto startTime = std::chrono::high_resolution_clock::now();
+  auto startTime = std::chrono::steady_clock::now();
 
   // Perft divide: show node counts per root move
   Move moves[MAX_MOVES];
@@ -433,7 +432,7 @@ void cmdPerft(Position &engine, std::istringstream &is) {
     totalNodes += n;
   }
 
-  auto endTime = std::chrono::high_resolution_clock::now();
+  auto endTime = std::chrono::steady_clock::now();
   long long ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime)
           .count();
@@ -454,7 +453,7 @@ void loop(Position &engine) {
   std::string line;
 
   // Initialize TT with default size (256 MB)
-  TT.resize(256);
+  if (TT.sizeMB() != 256) TT.resize(256);
 
   engine.setStartPos();
 
@@ -477,6 +476,7 @@ void loop(Position &engine) {
     } else if (cmdLower == "isready") {
       cmdIsReady();
     } else if (cmdLower == "eval") {
+      OutputLock outputLock(outputMutex());
       std::cout << "info string Eval: " << Eval::evaluate(engine) << std::endl;
     } else if (cmdLower == "setoption") {
       Threads.stopAndWait();
@@ -498,6 +498,7 @@ void loop(Position &engine) {
       Threads.stopAndWait();
       break;
     } else if (cmdLower == "d" || cmdLower == "display") {
+      OutputLock outputLock(outputMutex());
       std::cout << "info string Display board not implemented yet" << std::endl;
     }
   }
