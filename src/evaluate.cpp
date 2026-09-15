@@ -53,7 +53,14 @@ int evaluateKXK(const Position& pos) {
     int wKnights  = popcount(pos.bitboards[makePiece(winner, WKNIGHT)]);
 
     bool isMajor = (wQueens >= 1 || wRooks >= 1);
-    bool isMinors = (wBishops >= 2 || (wBishops >= 1 && wKnights >= 1));
+    U64 bishops = pos.bitboards[makePiece(winner, WBISHOP)];
+    bool light = false, dark = false;
+    for (U64 remaining = bishops; remaining;) {
+        const int square = pop_lsb(&remaining);
+        if (isLightSquare(square)) light = true;
+        else dark = true;
+    }
+    bool isMinors = ((light && dark) || (wBishops >= 1 && wKnights >= 1));
 
     if (!isMajor && !isMinors)
         return 0;
@@ -69,9 +76,19 @@ int evaluateKXK(const Position& pos) {
         int closeBonus = (7 - kingDistance(winnerKingSq, loserKingSq)) * 30;
         totalBonus = edgeBonus + closeBonus;
     } else {
-        // For 2 Bishops / Bishop+Knight: mate ONLY happens in a corner!
-        // Push directly into the corner and bring winning king into close opposition
-        int cornerBonus = (6 - cornerDistance(loserKingSq)) * 60;
+        // A single-colour bishop team plus knight must steer toward that colour.
+        // Two opposite-coloured bishops do not require a particular corner.
+        int distance = cornerDistance(loserKingSq);
+        if (!(light && dark) && wKnights) {
+            // isLightSquare() names even file+rank parity (including a1).
+            const int first = light ? 0 : 7;
+            const int second = first ^ 63;
+            auto manhattan = [](int a, int b) {
+                return std::abs((a & 7) - (b & 7)) + std::abs((a >> 3) - (b >> 3));
+            };
+            distance = std::min(manhattan(loserKingSq, first), manhattan(loserKingSq, second));
+        }
+        int cornerBonus = (6 - distance) * 60;
         int closeBonus  = (7 - kingDistance(winnerKingSq, loserKingSq)) * 40;
         totalBonus = cornerBonus + closeBonus;
     }
@@ -80,9 +97,22 @@ int evaluateKXK(const Position& pos) {
 }
 
 int evaluate(Position& pos) {
+    if (pos.isInsufficientMaterial()) return 0;
+    // Exact KBNK: keep a known-win material value and an unambiguous geometric
+    // gradient. A generic NNUE score can swamp the bishop-colour corner bonus.
+    // This is an evaluator, not a tablebase result or a mate-distance claim.
+    if (popcount(pos.pieces()) == 4) {
+        for (Color strong : {WHITE, BLACK}) {
+            if (popcount(pos.bitboards[makePiece(strong, WBISHOP)]) == 1 &&
+                popcount(pos.bitboards[makePiece(strong, WKNIGHT)]) == 1) {
+                const int sign = pos.white_to_move == (strong == WHITE) ? 1 : -1;
+                return clampStaticScore(sign * 10000 + evaluateKXK(pos));
+            }
+        }
+    }
     int score = NNUE::evaluate(pos);
     score += evaluateKXK(pos);
-    return score;
+    return clampStaticScore(score);
 }
 
 } // namespace Eval

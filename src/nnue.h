@@ -6,8 +6,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
-#include <fstream>
 #include <string>
 #include <vector>
 
@@ -15,7 +13,9 @@ class Position;
 
 namespace NNUE {
 
-inline constexpr const char* DEFAULT_MODEL_FILE = "auto";
+inline constexpr const char* DEFAULT_MODEL_FILE = "db-leela500m-v5.nnue";
+inline constexpr const char* DEFAULT_MODEL_SHA256 =
+    "96c00c917949fd95ec8c2f31881885ac745838dd82aa6c26f63150c750b7ba05";
 
 constexpr int PieceSquareFeatureDimensions = 11 * 64;
 constexpr int KingBuckets = 13;
@@ -30,7 +30,7 @@ constexpr int NetworkScale = 400;
 constexpr int NetworkQA = 255;
 constexpr int NetworkQB = 64;
 
-// NNUE v5 Compact Architecture Hash (13 King Buckets x 768 x 8 Buckets)
+// Serialized v5 identity (unchanged): 13x704 features, 768 neurons, 8 biases.
 constexpr std::uint32_t ArchitectureHash = 0x5a137683u;
 
 // 13-region king bucket layout (Obsidian style)
@@ -136,17 +136,28 @@ std::uint64_t modelGeneration();
 bool modelHasThreats();
 void refreshAccumulatorState(const Position& pos, AccumulatorState& state);
 void updateAccumulatorStateAfterMove(const Position& pos, const Move& move, Piece movedPiece, Piece capturedPiece, AccumulatorState& state);
-void setTrainingLogEnabled(bool enabled);
-void setTrainingLogFile(const std::string& path);
-bool trainingLogEnabled();
-const std::string& trainingLogFile();
 const ModelHeader& currentHeader();
 const std::string& currentModelPath();
+const std::string& currentModelSha256();
 std::string architectureSummary();
-void logTrainingSample(const Position& pos, const Move& bestMove, int score, int depth, std::uint64_t nodes);
 
 int evaluate(Position& pos);
 
+// Exact rational conversion, round halves away from zero, with the static
+// score domain reserved before narrowing. int32 * positive int32 fits int64.
+inline int scaledOutput(std::int32_t score, std::int32_t scale) {
+    constexpr std::int64_t denominator = 8128;
+    constexpr std::int64_t limit = std::int64_t(MAX_STATIC_SCORE) * denominator;
+    const std::int64_t product = std::int64_t(score) * scale;
+    if (product >= limit) return MAX_STATIC_SCORE;
+    if (product <= -limit) return -MAX_STATIC_SCORE;
+    return static_cast<int>((product + (product >= 0 ? denominator/2 : -denominator/2)) / denominator);
+}
+
 } // namespace NNUE
+
+#ifdef DEEPBECKY_RESOURCE_TEST_HOOKS
+namespace ResourceTestHooks { extern int failModelAllocation; }
+#endif
 
 #endif // DEEPBECKY_NNUE_H

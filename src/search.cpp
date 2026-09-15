@@ -179,7 +179,22 @@ inline int futilityMoveCount(bool improving, int depth) {
 
 // Draw score
 inline int drawScore(uint64_t nodes) {
-  return int(2 * (nodes & 1) - 1); // -1 or +1
+  return 2 * int(nodes & 1) - 1; // -1 or +1, no unsigned underflow
+}
+
+// No child stack access or recursion is allowed at the safety boundary.
+// A checked nonterminal gets a neutral horizon estimate, NOT a claimed draw
+// or a static stand-pat in check. Terminal scores retain their true meaning.
+static int boundaryScore(Position& pos, int ply, int alpha) {
+  if (pos.stopSearching || Threads.stop.load(std::memory_order_relaxed)) {
+    pos.stopSearching = true;
+    return alpha;
+  }
+  const bool check = pos.inCheck(pos.white_to_move);
+  if (!pos.hasLegalMove(check))
+    return check ? -MATE_SCORE + ply : drawScore(pos.nodes.load());
+  if (pos.isDraw(ply, check)) return drawScore(pos.nodes.load());
+  return check ? 0 : Eval::evaluate(pos);
 }
 
 std::string uciScore(int score) {
@@ -214,7 +229,7 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
   // overflow
   if (ply >= MAX_PLY - 1) {
     ss->pvLength = 0;
-    return Eval::evaluate(*this);
+    return Search::boundaryScore(*this, ply, alpha);
   }
 
   (ss + 1)->ply = ply + 1;
@@ -244,10 +259,17 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
   }
 
   // TT Probe in qsearch
-  TT.prefetch(hash);
-  TTProbe ttProbe = TT.probe(hash);
+  const uint64_t searchKey = ttKey();
+  TT.prefetch(searchKey);
+  TTProbe ttProbe = TT.probe(searchKey);
   bool ttHit = ttProbe.found;
   const TTData& ttData = ttProbe.data;
+  // A validated cached move is itself a legal-move witness. Otherwise use
+  // the complete existence test before any bound or stand-pat return.
+  const bool ttLegalWitness = !isInCheck && ttHit && !moveIsNone(ttData.move) &&
+      isPseudoLegal(ttData.move) && legalMove(ttData.move);
+  if (!isInCheck && !ttLegalWitness && !hasLegalMove(false))
+    return Search::drawScore(static_cast<uint64_t>(nodes));
   Move qsTTMove = MOVE_NONE;
   if (ttHit) {
     int ttScore = static_cast<int>(ttData.value);
@@ -258,11 +280,11 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
     if (ttScore <= -MATE_IN_MAX)
       ttScore += ply;
     // TT cutoff in qsearch
-    if (ttFlag == TT_EXACT)
+    if (halfmove < 90 && ttFlag == TT_EXACT)
       return ttScore;
-    if (ttFlag == TT_BETA && ttScore >= beta)
+    if (halfmove < 90 && ttFlag == TT_BETA && ttScore >= beta)
       return ttScore;
-    if (ttFlag == TT_ALPHA && ttScore <= alpha)
+    if (halfmove < 90 && ttFlag == TT_ALPHA && ttScore <= alpha)
       return ttScore;
 
     // Extract TT move for MovePicker ordering
@@ -274,15 +296,17 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
   // Use TT eval if available, otherwise compute evaluation. Keep the raw
   // value for TT storage; correction history and 50-move damping are local
   // search adjustments and must not be persisted as the static evaluation.
-  int stand;
+  int stand = -INF_SCORE;
   int16_t rawEval = EVAL_NONE;
-  if (ttHit && ttData.eval != EVAL_NONE) {
+  if (isInCheck) {
+    // Evasions have no stand-pat. Do not evaluate or correct a sentinel.
+  } else if (ttHit && ttData.eval != EVAL_NONE) {
     rawEval = ttData.eval;
     stand = static_cast<int>(rawEval);
   } else {
     stand = evaluate();
     if (!isInCheck)
-      rawEval = static_cast<int16_t>(std::clamp(stand, -32000, 32000));
+      rawEval = static_cast<int16_t>(clampStaticScore(stand));
   }
   if (isInCheck)
     rawEval = EVAL_NONE;
@@ -292,11 +316,12 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
     int corHist = thread->corHist[white_to_move ? WHITE : BLACK][pawnHash];
     int nonPawnCor = thread->nonPawnCorHist[white_to_move ? WHITE : BLACK][nonPawnHash];
     stand += (corHist + nonPawnCor) / Search::Tune::CorHistDivisor;
+    stand = clampStaticScore(stand);
   }
 
   // 50-Move Rule Damping: smoothly scale down static evaluation as halfmove approaches 100
   if (halfmove >= 70 && !isInCheck && std::abs(stand) < MATE_IN_MAX) {
-    stand = (stand * (100 - halfmove)) / 30;
+    stand = (stand * std::max(0, 100 - halfmove)) / 30;
   }
 
   int best = stand;
@@ -316,7 +341,7 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
       storeScore -= ply;
 
     const uint16_t packedMove = moveIsNone(bestMove) ? 0 : bestMove.data;
-    ttProbe.writer.save(hash, static_cast<int16_t>(storeScore), false, flag,
+    ttProbe.writer.save(searchKey, static_cast<int16_t>(storeScore), false, flag,
                         TT_DEPTH_QS, packedMove, rawEval, TT.generation());
   };
 
@@ -365,7 +390,7 @@ int Position::qsearch(int alpha, int beta, SearchStack *ss) {
     }
 
     makeMove(m);
-    TT.prefetch(hash); // prefetch child's TT cluster
+    TT.prefetch(ttKey()); // prefetch child's rule-50-aware TT cluster
     legalMoves++;
 
     int score = -qsearch(-beta, -alpha, ss + 1);
@@ -413,7 +438,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
   // overflow
   if (ply >= MAX_PLY - 1) {
     ss->pvLength = 0;
-    return Eval::evaluate(*this);
+    return Search::boundaryScore(*this, ply, alpha);
   }
 
   (ss + 1)->ply = ply + 1;
@@ -465,8 +490,9 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     selDepth = ply;
 
   // ============ TT Probe ============
-  TT.prefetch(hash);
-  TTProbe ttProbe = TT.probe(hash);
+  const uint64_t searchKey = ttKey();
+  TT.prefetch(searchKey);
+  TTProbe ttProbe = TT.probe(searchKey);
   bool ttHit = ttProbe.found;
   const TTData& ttData = ttProbe.data;
   Move ttMove = MOVE_NONE;
@@ -536,16 +562,12 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     int nonPawnHash = (hash ^ (pawnKey >> 16)) % 16384;
     int corHist = thread->corHist[white_to_move ? WHITE : BLACK][pawnHash];
     int nonPawnCor = thread->nonPawnCorHist[white_to_move ? WHITE : BLACK][nonPawnHash];
-    staticEval = eval =
-        static_cast<int>(ttEval) + (corHist + nonPawnCor) / Search::Tune::CorHistDivisor;
+    staticEval = eval = clampStaticScore(
+        static_cast<int>(ttEval) + (corHist + nonPawnCor) / Search::Tune::CorHistDivisor);
 
-    if (ttFlag == TT_EXACT || (ttFlag == TT_BETA && ttScore > eval) ||
-        (ttFlag == TT_ALPHA && ttScore < eval)) {
-      eval = ttScore;
-    }
   } else {
     staticEval = eval = evaluate();
-    rawEval = static_cast<int16_t>(std::clamp(staticEval, -32000, 32000));
+    rawEval = static_cast<int16_t>(clampStaticScore(staticEval));
 
     // Apply CorHist (Pawn + Non-Pawn)
     int pawnHash = pawnKey % 16384;
@@ -553,21 +575,29 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
     int corHist = thread->corHist[white_to_move ? WHITE : BLACK][pawnHash];
     int nonPawnCor = thread->nonPawnCorHist[white_to_move ? WHITE : BLACK][nonPawnHash];
     staticEval += (corHist + nonPawnCor) / Search::Tune::CorHistDivisor;
+    staticEval = clampStaticScore(staticEval);
     eval = staticEval;
   }
 
   // 50-Move Rule Damping: smoothly scale down static evaluation as halfmove approaches 100
   if (halfmove >= 70 && !isInCheck && std::abs(eval) < MATE_IN_MAX) {
-    eval = (eval * (100 - halfmove)) / 30;
+    eval = (eval * std::max(0, 100 - halfmove)) / 30;
     staticEval = eval;
   }
+
+  // A search bound already includes rule-50 effects. Only raw static eval is
+  // damped above; importing the bound before damping would scale it twice.
+  if (!isInCheck && ttHit && ttEval != EVAL_NONE &&
+      (ttFlag == TT_EXACT || (ttFlag == TT_BETA && ttScore > eval) ||
+       (ttFlag == TT_ALPHA && ttScore < eval)))
+    eval = ttScore;
 
   // Keep one NMP gate independent from correction history and TT bounds.
   // rawEval is the unadjusted NNUE/static value saved in the TT. Only the
   // objective 50-move-rule damping is shared with the search score.
   int nmpStaticEval = static_cast<int>(rawEval);
   if (halfmove >= 70 && std::abs(nmpStaticEval) < MATE_IN_MAX)
-    nmpStaticEval = (nmpStaticEval * (100 - halfmove)) / 30;
+    nmpStaticEval = (nmpStaticEval * std::max(0, 100 - halfmove)) / 30;
 
   // Store static eval in search stack for improving detection
   ss->staticEval = staticEval;
@@ -860,7 +890,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
 
     // Prefetch TT cluster for child position while we compute
     // givesCheck/extensions
-    TT.prefetch(hash);
+    TT.prefetch(ttKey());
 
     // Check if opponent is in check (we give check) - SAME side as
     // white_to_move now This is computed early since we need it for pruning and
@@ -1343,17 +1373,13 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
 
       // Update Pawn CorHist
       int16_t &entryPawn = thread->corHist[white_to_move ? WHITE : BLACK][pawnHash];
-      int newValPawn = entryPawn + weight *
-                               (bonus * Search::Tune::CorHistDivisor / 2 - entryPawn) /
-                               16384;
-      entryPawn = static_cast<int16_t>(std::clamp(newValPawn, -32767, 32767));
+      entryPawn = Search::correctionUpdate(entryPawn, bonus,
+                                           Search::Tune::CorHistDivisor, weight);
 
       // Update Non-Pawn CorHist
       int16_t &entryNP = thread->nonPawnCorHist[white_to_move ? WHITE : BLACK][nonPawnHash];
-      int newValNP = entryNP + weight *
-                             (bonus * Search::Tune::CorHistDivisor / 2 - entryNP) /
-                             16384;
-      entryNP = static_cast<int16_t>(std::clamp(newValNP, -32767, 32767));
+      entryNP = Search::correctionUpdate(entryNP, bonus,
+                                         Search::Tune::CorHistDivisor, weight);
     }
 
     TTFlag flag;
@@ -1372,7 +1398,7 @@ int Position::pvs(int depth, int alpha, int beta, SearchStack *ss,
 
     uint16_t packedMove = moveIsNone(bestMove) ? 0 : bestMove.data;
 
-    ttProbe.writer.save(hash, static_cast<int16_t>(storeScore), pvNode, flag,
+    ttProbe.writer.save(searchKey, static_cast<int16_t>(storeScore), pvNode, flag,
                         depth, packedMove, rawEval, TT.generation());
   }
 
@@ -1440,7 +1466,7 @@ Move Position::search(int maxDepth, int timeMs) {
     // move. Surviving on the clock is the only meaningful objective here.
     if (hasActiveTimeLimit() && TimeMgr.maximum() <= 1 && numLegalMoves > 0) {
       Move emergencyMove = legalMoves[0];
-      const TTProbe emergencyProbe = TT.probe(hash);
+      const TTProbe emergencyProbe = TT.probe(ttKey());
       if (emergencyProbe.found && !moveIsNone(emergencyProbe.data.move)) {
         const Move storedMove = emergencyProbe.data.move;
         for (int i = 0; i < numLegalMoves; ++i) {
@@ -1655,7 +1681,7 @@ Move Position::search(int maxDepth, int timeMs) {
       }
       // Fallback to TT only if rootBestMove was not set
       if (best == MOVE_NONE) {
-        const TTProbe rootProbe = TT.probe(hash);
+        const TTProbe rootProbe = TT.probe(ttKey());
         if (rootProbe.found) {
           Move ttBest = rootProbe.data.move;
           bool isLegalMove = false;

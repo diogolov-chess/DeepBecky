@@ -15,6 +15,10 @@
 // Global transposition table instance
 TranspositionTable TT;
 
+#ifdef DEEPBECKY_RESOURCE_TEST_HOOKS
+namespace ResourceTestHooks { bool failTTAllocation = false; }
+#endif
+
 namespace {
 
 uint64_t packPayload(const TTData& data) {
@@ -116,60 +120,62 @@ void enableLargePages() {
 }
 #endif
 
-void TranspositionTable::resize(size_t sizeMB) {
+bool TranspositionTable::resize(size_t sizeMB) {
     if (sizeMB < 1) sizeMB = 1;
     if (sizeMB > 32768) sizeMB = 32768;
+
+    if (table_ && sizeMB == this->sizeMB()) return true;
+#ifdef DEEPBECKY_RESOURCE_TEST_HOOKS
+    if (ResourceTestHooks::failTTAllocation) return false;
+#endif
 
     size_t newClusterCount = sizeMB * 1024ULL * 1024ULL / sizeof(TTCluster);
     if (newClusterCount < 1024) newClusterCount = 1024;
     size_t allocSize = newClusterCount * sizeof(TTCluster);
 
-    if (table_) {
-#if defined(_WIN32)
-        if (isLargePageAllocated_) {
-            VirtualFree(table_, 0, MEM_RELEASE);
-        } else {
-            _aligned_free(table_);
-        }
-#else
-        free(table_);
-#endif
-        table_ = nullptr;
-        isLargePageAllocated_ = false;
-    }
-
+    TTCluster* replacement = nullptr;
+    bool replacementLargePages = false;
 #if defined(_WIN32)
     enableLargePages();
     SIZE_T largePageMin = GetLargePageMinimum();
     if (largePageMin > 0) {
         SIZE_T lpSize = (allocSize + largePageMin - 1) & ~(largePageMin - 1);
-        table_ = static_cast<TTCluster*>(VirtualAlloc(NULL, lpSize, MEM_COMMIT | MEM_RESERVE | MEM_LARGE_PAGES, PAGE_READWRITE));
-        if (table_) {
-            isLargePageAllocated_ = true;
+        replacement = static_cast<TTCluster*>(VirtualAlloc(NULL, lpSize, MEM_COMMIT | MEM_RESERVE | MEM_LARGE_PAGES, PAGE_READWRITE));
+        if (replacement) {
+            replacementLargePages = true;
             newClusterCount = lpSize / sizeof(TTCluster);
             std::cout << "info string Hash allocated " << (lpSize >> 20) << " MB with Large Pages" << std::endl;
         }
     }
     
-    if (!table_) {
-        table_ = static_cast<TTCluster*>(
+    if (!replacement) {
+        replacement = static_cast<TTCluster*>(
             _aligned_malloc(allocSize, alignof(TTCluster)));
     }
 #else
-    table_ = static_cast<TTCluster*>(
+    replacement = static_cast<TTCluster*>(
         aligned_alloc(alignof(TTCluster), allocSize));
 #endif
 
-    if (!table_) {
+    if (!replacement) {
         std::cerr << "Failed to allocate " << sizeMB << " MB for TT" << std::endl;
-        clusterCount_ = 0;
-        return;
+        return false;
     }
 
+    for (size_t i = 0; i < newClusterCount; ++i)
+        ::new (static_cast<void*>(replacement + i)) TTCluster;
+    // All users must be parked. Publish only the fully initialized allocation.
+#if defined(_WIN32)
+    if (isLargePageAllocated_) VirtualFree(table_, 0, MEM_RELEASE);
+    else _aligned_free(table_);
+#else
+    free(table_);
+#endif
+    table_ = replacement;
+    isLargePageAllocated_ = replacementLargePages;
     clusterCount_ = newClusterCount;
-    for (size_t i = 0; i < clusterCount_; ++i)
-        ::new (static_cast<void*>(table_ + i)) TTCluster;
     generation8_ = 0; // TTCluster construction already cleared every entry.
+    return true;
 }
 
 void TranspositionTable::clear() {
@@ -213,6 +219,7 @@ void TranspositionTable::clear() {
 }
 
 TTProbe TranspositionTable::probe(uint64_t key) {
+    if (!table_) return {};
     TTEntry* const tte = firstEntry(key);
     TTEntry* replace = nullptr;
     int replaceValue = std::numeric_limits<int>::max();

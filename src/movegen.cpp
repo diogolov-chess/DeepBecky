@@ -4,6 +4,43 @@
 
 // ========================= Attack Detection =========================
 
+bool Position::hasLegalMove() {
+    return hasLegalMove(inCheck(white_to_move));
+}
+
+bool Position::hasLegalMove(bool checked) {
+    // Outside check, any geometrically valid move of an unpinned non-king
+    // preserves king safety. Compute pins once, not once per candidate.
+    const Color us = white_to_move ? WHITE : BLACK;
+    const U64 occupied = pieces();
+    if (!checked) {
+        U64 pinners;
+        const U64 free = color_bitboards[us] & ~blockersForKing(white_to_move,pinners);
+        U64 pawns = bitboards[makePiece(us,WPAWN)] & free;
+        if ((white_to_move ? pawns << 8 : pawns >> 8) & ~occupied) return true;
+        const U64 enemies = color_bitboards[us == WHITE ? BLACK : WHITE];
+        while (pawns) {
+            const int from=pop_lsb(&pawns);
+            if ((white_to_move ? WPAWN_ATK_BB[from] : BPAWN_ATK_BB[from]) & enemies) return true;
+        }
+        U64 knights=bitboards[makePiece(us,WKNIGHT)] & free;
+        while(knights) if(KNIGHT_ATK_BB[pop_lsb(&knights)] & ~color_bitboards[us]) return true;
+        U64 diagonal=(bitboards[makePiece(us,WBISHOP)]|bitboards[makePiece(us,WQUEEN)]) & free;
+        while(diagonal) if(Magic::bishopAttacks(pop_lsb(&diagonal),occupied) & ~color_bitboards[us]) return true;
+        U64 straight=(bitboards[makePiece(us,WROOK)]|bitboards[makePiece(us,WQUEEN)]) & free;
+        while(straight) if(Magic::rookAttacks(pop_lsb(&straight),occupied) & ~color_bitboards[us]) return true;
+    }
+    // King attacks depend on occupancy after vacating its square.
+    U64 destinations = KING_ATK_BB[king_sq[us]] & ~color_bitboards[us];
+    while (destinations) {
+        const int to = pop_lsb(&destinations);
+        if (legalMove(::makeMove(king_sq[us], to))) return true;
+    }
+    // Includes check evasions, pinned-piece moves, EP and castling.
+    Move moves[MAX_MOVES];
+    return generateLegal(moves) != 0;
+}
+
 bool Position::isAttacked(int s, bool byWhite) const {
     U64 pawns   = byWhite ? bitboards[WPAWN]   : bitboards[BPAWN];
     U64 knights = byWhite ? bitboards[WKNIGHT] : bitboards[BKNIGHT];

@@ -18,6 +18,10 @@ using U64 = uint64_t;
 constexpr int INF_SCORE   = 30000;
 constexpr int MATE_SCORE  = 29000;
 constexpr int MATE_IN_MAX = 28000;
+constexpr int MAX_STATIC_SCORE = MATE_IN_MAX - 1;
+inline int clampStaticScore(int score) {
+    return std::clamp(score, -MAX_STATIC_SCORE, MAX_STATIC_SCORE);
+}
 constexpr int MAX_PLY     = 64;
 constexpr int MAX_MOVES   = 256;
 constexpr int MAX_STACK   = 4096;

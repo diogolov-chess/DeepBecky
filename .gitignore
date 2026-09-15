@@ -63,6 +63,7 @@ pgo-data/
 src/pgo-data/
 *.profdata
 *.profraw
+*.manifest.json
 *.gcda
 *.gcno
 

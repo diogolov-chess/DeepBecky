@@ -102,9 +102,33 @@ PGO_DIR   := pgo-data
 
 # Build Configuration Options
 PROFILE   ?= bmi2
+ifeq ($(filter $(PROFILE),portable sse42 avx2 bmi2 avx512 native),)
+$(error Unsupported PROFILE $(PROFILE))
+endif
 STATIC    ?= 1
 PGO_DEPTH ?= 13
 SELF_MK   := $(lastword $(MAKEFILE_LIST))
+
+ifeq ($(DETECTED_OS),Windows)
+PYTHON ?= python
+else
+PYTHON ?= python3
+endif
+CONFIG_KEY := $(COMPILER_TYPE)-$(PROFILE)-static$(STATIC)-stats$(if $(filter 1,$(SEARCH_STATS)),1,0)
+BUILD_DIR := build/$(CONFIG_KEY)-$(if $(PGO),$(PGO),plain)
+ifeq ($(COMPILER_TYPE),gcc)
+  ifneq ($(PGO),)
+    # GCC profile filenames encode object paths. Keep that path stable;
+    # buildinfo's full flag/profile identity forces the gen -> use rebuild.
+    BUILD_DIR := build/$(CONFIG_KEY)-pgo
+  endif
+endif
+PGO_DIR := pgo-data/$(CONFIG_KEY)
+BUILD_MODE ?= release
+ifneq ($(filter debug sanitize-ub sanitize-asan,$(MAKECMDGOALS)),)
+BUILD_MODE := $(firstword $(filter debug sanitize-ub sanitize-asan,$(MAKECMDGOALS)))
+endif
+BUILD_DIR := $(BUILD_DIR)-$(BUILD_MODE)
 
 # Base Optimization and Warning Flags
 CXXSTD    := -std=gnu++17
@@ -177,7 +201,6 @@ ifeq ($(SEARCH_STATS),1)
   # Keep diagnostic objects and executable isolated. This prevents Make from
   # reusing objects compiled with different preprocessor flags, and prevents a
   # diagnostic executable from masquerading as the production binary.
-  BUILD_DIR := build-searchstats
   TARGET := DeepBecky_3.0-searchstats$(TARGET_EXT)
   CXXFLAGS_BASE += -DENABLE_SEARCH_STATS
 endif
@@ -191,6 +214,7 @@ ifeq ($(STATIC),1)
 endif
 
 # Profile-Guided Optimization (PGO) Flags
+CXXFLAGS_BASE += -I$(BUILD_DIR)
 ifeq ($(PGO),gen)
   ifeq ($(COMPILER_TYPE),clang)
     CXXFLAGS := $(CXXFLAGS_BASE) -fprofile-generate=$(PGO_DIR)
@@ -213,6 +237,16 @@ else
 endif
 
 # Object Files
+ifeq ($(BUILD_MODE),debug)
+CXXFLAGS := $(CXXSTD) -g -O0 $(WARN) $(ARCHFLAGS) -I. -I$(BUILD_DIR)
+LDFLAGS := $(LDFLAGS_EXTRA) -lpthread
+else ifneq ($(filter sanitize-ub sanitize-asan,$(BUILD_MODE)),)
+SANITIZER := $(if $(filter sanitize-ub,$(BUILD_MODE)),undefined,address)
+CXXFLAGS := $(CXXSTD) -g -O1 -fsanitize=$(SANITIZER) -fno-omit-frame-pointer $(WARN) $(ARCHFLAGS) -I. -I$(BUILD_DIR)
+LDFLAGS := -fsanitize=$(SANITIZER) $(LDFLAGS_EXTRA) -lpthread
+endif
+CONFIG_CXXFLAGS := $(CXXFLAGS)
+CONFIG_LDFLAGS := $(LDFLAGS)
 OBJ := $(addprefix $(BUILD_DIR)/,$(SRC:.cpp=.o))
 
 # Targets
@@ -220,6 +254,21 @@ OBJ := $(addprefix $(BUILD_DIR)/,$(SRC:.cpp=.o))
 
 # Default Target
 all: $(TARGET)
+
+# Full flags/compiler/source identity invalidates cached objects as needed.
+.PHONY: FORCE
+FORCE:
+define BUILD_REQUEST
+$(CXX)
+$(CONFIG_CXXFLAGS)
+$(CONFIG_LDFLAGS)
+resource-unwind=thread,position,tt,nnue
+endef
+$(BUILD_DIR)/buildinfo.h: FORCE | $(BUILD_DIR)
+	$(file >$(BUILD_DIR)/request.txt,$(BUILD_REQUEST))
+	@$(PYTHON) build_artifacts.py configure --directory $(BUILD_DIR)
+
+$(OBJ): $(BUILD_DIR)/buildinfo.h
 
 # Deterministic SEE regression tests. The target links the engine objects
 # without the UCI entry point and does not alter the production binary.
@@ -248,6 +297,13 @@ SEARCH_TEST_LDFLAGS := $(filter-out -fprofile-use=%,$(LDFLAGS))
 
 search-tests: $(SEARCH_TEST_TARGET)
 	@$(SEARCH_TEST_TARGET)
+
+.PHONY: structural-tests
+structural-tests: $(BUILD_DIR)/structural_search_tests$(TARGET_EXT)
+	@$(BUILD_DIR)/structural_search_tests$(TARGET_EXT)
+
+$(BUILD_DIR)/structural_search_tests$(TARGET_EXT): ../tests/structural_search_tests.cpp $(SEARCH_TEST_OBJ)
+	$(CXX) $(SEARCH_TEST_CXXFLAGS) $^ -o $@ $(SEARCH_TEST_LDFLAGS)
 
 $(SEARCH_TEST_TARGET): $(SEARCH_TEST_OBJ) $(SEARCH_TEST_SRC) | $(BUILD_DIR)
 	@echo "== Linking search regression tests ($(COMPILER_TYPE), $(PROFILE)) =="
@@ -285,17 +341,33 @@ smp-tests: $(BUILD_DIR)/smp_lifecycle_tests$(TARGET_EXT)
 $(BUILD_DIR)/thread-test.o: thread.cpp $(HEADERS) | $(BUILD_DIR)
 	$(CXX) $(SEARCH_TEST_CXXFLAGS) -fexceptions -funwind-tables -DDEEPBECKY_TEST_HOOKS -c $< -o $@
 
+$(BUILD_DIR)/thread-test.o: $(BUILD_DIR)/buildinfo.h
+
 $(BUILD_DIR)/smp_lifecycle_tests$(TARGET_EXT): ../tests/smp_lifecycle_tests.cpp $(filter-out $(BUILD_DIR)/thread.o,$(SEARCH_TEST_OBJ)) $(BUILD_DIR)/thread-test.o
 	$(CXX) $(SEARCH_TEST_CXXFLAGS) -fexceptions -DDEEPBECKY_TEST_HOOKS $^ -o $@ $(SEARCH_TEST_LDFLAGS)
 
-$(TARGET): $(OBJ)
+.PHONY: resource-tests
+resource-tests: $(BUILD_DIR)/resource_robustness_tests$(TARGET_EXT)
+	@$(BUILD_DIR)/resource_robustness_tests$(TARGET_EXT)
+
+$(BUILD_DIR)/tt-resource.o: tt.cpp $(HEADERS) $(BUILD_DIR)/buildinfo.h
+	$(CXX) $(SEARCH_TEST_CXXFLAGS) -fexceptions -funwind-tables -DDEEPBECKY_RESOURCE_TEST_HOOKS -c $< -o $@
+$(BUILD_DIR)/nnue-resource.o: nnue.cpp $(HEADERS) $(BUILD_DIR)/buildinfo.h
+	$(CXX) $(SEARCH_TEST_CXXFLAGS) -fexceptions -funwind-tables -DDEEPBECKY_RESOURCE_TEST_HOOKS -c $< -o $@
+$(BUILD_DIR)/resource_robustness_tests$(TARGET_EXT): ../tests/resource_robustness_tests.cpp $(filter-out $(BUILD_DIR)/tt.o $(BUILD_DIR)/nnue.o,$(SEARCH_TEST_OBJ)) $(BUILD_DIR)/tt-resource.o $(BUILD_DIR)/nnue-resource.o
+	$(CXX) $(SEARCH_TEST_CXXFLAGS) -fexceptions -DDEEPBECKY_RESOURCE_TEST_HOOKS $^ -o $@ $(SEARCH_TEST_LDFLAGS)
+
+$(TARGET): FORCE $(BUILD_DIR)/$(TARGET)
+	@$(PYTHON) build_artifacts.py publish --directory $(BUILD_DIR) --target $(TARGET)
+
+$(BUILD_DIR)/$(TARGET): $(OBJ)
 	@echo "== Linking $(TARGET) ($(COMPILER_TYPE), $(PROFILE)) =="
 	$(CXX) $(OBJ) -o $@ $(LDFLAGS)
 
 # Compile C++ Object Files
 # Resource construction must unwind if allocation/native thread creation fails.
 # Hot recursive search remains compiled without exceptions.
-$(BUILD_DIR)/thread.o $(BUILD_DIR)/position.o $(BUILD_DIR)/tt.o: CXXFLAGS += -fexceptions -funwind-tables
+$(BUILD_DIR)/thread.o $(BUILD_DIR)/position.o $(BUILD_DIR)/tt.o $(BUILD_DIR)/nnue.o: CXXFLAGS += -fexceptions -funwind-tables
 $(BUILD_DIR)/%.o: %.cpp $(HEADERS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
@@ -304,34 +376,16 @@ $(BUILD_DIR):
 ifdef MSYSTEM
 	@mkdir -p $(BUILD_DIR)
 else ifeq ($(DETECTED_OS),Windows)
-	@if not exist $(BUILD_DIR) mkdir $(BUILD_DIR)
+	@if not exist "$(BUILD_DIR)" mkdir "$(BUILD_DIR)"
 else
 	@mkdir -p $(BUILD_DIR)
 endif
 
-# Clean Object Files and Target
+# Clean only one validated configuration; publication is refreshed by all.
 clean:
-	@echo "Cleaning build files..."
-ifdef MSYSTEM
-	@rm -rf $(BUILD_DIR) $(TARGET)
-else ifeq ($(DETECTED_OS),Windows)
-	@if exist $(BUILD_DIR) rmdir /s /q $(BUILD_DIR)
-	@if exist $(TARGET) del /q $(TARGET)
-else
-	@rm -rf $(BUILD_DIR) $(TARGET)
-endif
+	@$(PYTHON) build_artifacts.py clean --directory $(BUILD_DIR)
 
-# Clean Everything (including PGO profiles)
-distclean: clean
-	@echo "Cleaning PGO data..."
-ifdef MSYSTEM
-	@rm -rf $(PGO_DIR)
-else ifeq ($(DETECTED_OS),Windows)
-	@if exist $(PGO_DIR) rmdir /s /q $(PGO_DIR)
-else
-	@rm -rf $(PGO_DIR)
-endif
-
+distclean: clean pgo-clean
 # ============================================================================
 # PGO PROFILE-GUIDED OPTIMIZATION TARGETS
 # ============================================================================
@@ -339,22 +393,14 @@ endif
 .NOTPARALLEL: pgo pgo-gen pgo-use
 
 pgo-clean:
-	@echo "Removing PGO profile data..."
-ifdef MSYSTEM
-	@rm -rf $(PGO_DIR)
-else ifeq ($(DETECTED_OS),Windows)
-	@if exist $(PGO_DIR) rmdir /s /q $(PGO_DIR)
-else
-	@rm -rf $(PGO_DIR)
-endif
-
+	@$(PYTHON) build_artifacts.py clean --directory $(PGO_DIR)
 ifeq ($(DETECTED_OS),Windows)
 PYTHON ?= python
 else
 PYTHON ?= python3
 endif
 
-pgo-gen: clean
+pgo-gen:
 	@echo ""
 	@echo "============================================================"
 	@echo "  PGO Step 1: Building Instrumented Binary ($(COMPILER_TYPE))"
@@ -372,13 +418,13 @@ pgo-use:
 	@echo "============================================================"
 	@echo "  PGO Step 2: Compiling Final Optimized Binary ($(COMPILER_TYPE))"
 	@echo "============================================================"
-	@$(MAKE) -f $(SELF_MK) clean
 	@$(MAKE) -f $(SELF_MK) PGO=use PROFILE=$(PROFILE) CXX=$(CXX) all
 	@echo "== PGO Optimized Build Complete! =="
 
-pgo: distclean
+pgo: pgo-clean
 	@$(MAKE) -f $(SELF_MK) pgo-gen PROFILE=$(PROFILE) CXX=$(CXX)
 	@$(MAKE) -f $(SELF_MK) pgo-use PROFILE=$(PROFILE) CXX=$(CXX)
+	@$(PYTHON) artifact_bench.py --engine ./$(TARGET)
 	@echo ""
 	@echo "============================================================"
 	@echo "  Deep Becky 2.5 PGO Build Succeeded!"
@@ -424,23 +470,7 @@ endif
 # DEBUG BUILD
 # ============================================================================
 
-debug: CXXFLAGS := $(CXXSTD) -g -O0 -Wall -Wextra -DDEBUG -I. -DENGINE_VERSION="\"$(ENGINE_VERSION_STR) (Debug)\""
-debug: LDFLAGS := $(STRIPFLAG)
-debug: clean all
-	@echo == Debug build complete ==
-
-# UndefinedBehaviorSanitizer (UBSan)
-sanitize-ub: CXXFLAGS := $(CXXSTD) -g -O1 -fsanitize=undefined -fno-omit-frame-pointer $(WARN) $(ARCHFLAGS) -faligned-new -I. -DENGINE_VERSION="\"$(ENGINE_VERSION_STR) (UBSan)\""
-sanitize-ub: LDFLAGS := -fsanitize=undefined $(LDFLAGS_EXTRA)
-sanitize-ub: clean all
-	@echo == UBSan build complete ==
-
-# AddressSanitizer (ASan)
-sanitize-asan: CXXFLAGS := $(CXXSTD) -g -O1 -fsanitize=address -fno-omit-frame-pointer $(WARN) $(ARCHFLAGS) -faligned-new -I. -DENGINE_VERSION="\"$(ENGINE_VERSION_STR) (ASan)\""
-sanitize-asan: LDFLAGS := -fsanitize=address $(LDFLAGS_EXTRA)
-sanitize-asan: clean all
-	@echo == ASan build complete ==
-
+debug sanitize-ub sanitize-asan: all
 # ============================================================================
 # DIAGNOSTICS & HELP
 # ============================================================================

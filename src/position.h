@@ -29,23 +29,6 @@ extern Zobrist ZOB;
 // ============================================================================
 // Hash Table Cache Structures
 // ============================================================================
-constexpr int PAWN_TT_SIZE = 1 << 16;      // 64K entries for pawn structure cache
-constexpr int MATERIAL_TT_SIZE = 1 << 14;  // 16K entries for material configuration cache
-
-struct PawnEntry {
-    uint64_t key = 0;
-    int16_t scoreMG = 0;
-    int16_t scoreEG = 0;
-};
-
-struct MaterialEntry {
-    uint64_t key = 0;
-    int16_t scoreMG = 0;
-    int16_t scoreEG = 0;
-    int8_t phase = 0;
-    int8_t flags = 0;  // bit 0: white bishop pair, bit 1: black bishop pair
-};
-
 // ============================================================================
 // Search Heuristics
 // ============================================================================
@@ -139,6 +122,16 @@ public:
 
     // Move Generation
     int generateLegal(Move* moves, GenType type = GEN_ALL);
+    bool hasLegalMove();
+    bool hasLegalMove(bool checked);
+    // Repetition keeps hash unchanged. Search bounds also depend on rule-50.
+    uint64_t ttKey() const {
+        if (halfmove == 0) return hash;
+        uint64_t context = static_cast<uint64_t>(halfmove);
+        context = (context ^ (context >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+        context = (context ^ (context >> 27)) * UINT64_C(0x94d049bb133111eb);
+        return hash ^ (context ^ (context >> 31));
+    }
     int generateLegal(Move* moves, bool capturesOnly);
 
     // Attack Detection & Pins
@@ -154,6 +147,9 @@ public:
     void undoMove(const Move& m);
     void makeNullMove();
     void undoNullMove();
+    // Discard only played-game undo; retain repetition and a fresh NNUE root.
+    void consolidateGameRoot();
+    void ensureUndoCapacity();
     // King-safety test for an already pseudo-legal move. Cached/untrusted
     // encodings must pass isPseudoLegal() first (including special flags).
     bool legalMove(const Move& m);
@@ -187,8 +183,6 @@ struct Threats {
     Move uciToMove(const std::string& s);
 
     // Table & Heuristic Resets
-    void clearTT();
-    void clearHeuristics();
 
     // Time Management
     bool timeUp() const;

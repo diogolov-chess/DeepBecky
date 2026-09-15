@@ -1,4 +1,5 @@
 #include "nnue.h"
+#include "sha256.h"
 #include "magic.h"
 #include "position.h"
 #include "threats.h"
@@ -13,8 +14,12 @@
 #include <iostream>
 #include <limits>
 #include <optional>
-#include <mutex>
 #include <system_error>
+#include <stdexcept>
+
+#ifdef DEEPBECKY_RESOURCE_TEST_HOOKS
+namespace ResourceTestHooks { int failModelAllocation = 0; }
+#endif
 
 #ifdef __AVX2__
 #include <immintrin.h>
@@ -90,38 +95,17 @@ std::optional<fs::path> resolveExplicitModelPath(const std::string& requestedPat
 }
 
 std::optional<fs::path> resolveAutoModelPath() {
-    const fs::path searchDir = executableDirectory();
+    // Compatibility alias: never select weights by modification time.
+    const auto candidate = executableDirectory() / NNUE::DEFAULT_MODEL_FILE;
     std::error_code ec;
-    if (!fs::exists(searchDir, ec) || ec) return std::nullopt;
+    if (fs::is_regular_file(candidate, ec) && !ec) return candidate;
+    // Test runners/build-tree binaries may reside below the distributed model.
+    // The pinned digest below still enforces the exact model identity.
     ec.clear();
-    if (!fs::is_directory(searchDir, ec) || ec) return std::nullopt;
-
-    std::optional<fs::path> bestCandidate;
-    fs::file_time_type bestTime{};
-    std::string bestName;
-
-    for (fs::directory_iterator it(searchDir, ec), end; !ec && it != end; it.increment(ec)) {
-        const fs::directory_entry& entry = *it;
-        std::error_code entryEc;
-        if (!entry.is_regular_file(entryEc) || entryEc) continue;
-
-        const fs::path candidate = entry.path();
-        if (toLowerCopy(candidate.extension().string()) != ".nnue") continue;
-
-        std::error_code timeEc;
-        const fs::file_time_type modified = entry.last_write_time(timeEc);
-        if (timeEc) continue;
-        const std::string filename = candidate.filename().string();
-        if (!bestCandidate || modified > bestTime || (modified == bestTime && filename > bestName)) {
-            bestCandidate = candidate;
-            bestTime = modified;
-            bestName = filename;
-        }
-    }
-
-    return bestCandidate;
+    const auto cwdCandidate = currentDirectory() / NNUE::DEFAULT_MODEL_FILE;
+    if (fs::is_regular_file(cwdCandidate, ec) && !ec) return cwdCandidate;
+    return std::nullopt;
 }
-
 template <typename T>
 void readRawBlock(const std::uint8_t*& cursor, std::vector<T>& dest, std::size_t count) {
     dest.resize(count);
@@ -131,6 +115,7 @@ void readRawBlock(const std::uint8_t*& cursor, std::vector<T>& dest, std::size_t
 
 struct ModelState {
     std::string path = NNUE::DEFAULT_MODEL_FILE;
+    std::string sha256;
     NNUE::ModelHeader header{};
     std::uint64_t generation = 0;
     bool hasThreats = false;
@@ -145,10 +130,6 @@ struct ModelState {
     std::vector<std::int8_t>  outputWeights;
     std::vector<std::int32_t> outputBias;
     std::vector<std::int32_t> bucketBias;
-    std::string trainingLogPath = "deepbecky_train.jsonl";
-    std::ofstream trainingLog;
-    std::mutex trainingMutex;
-    bool trainingEnabled = false;
     bool loaded = false;
 };
 
@@ -245,6 +226,27 @@ bool headerMatchesArchitecture(const NNUE::ModelHeader& header) {
         && header.payloadBytes == expectedPayloadBytes();
 }
 
+bool arithmeticFits(const ModelState& model) {
+    const auto layerFits = [](const auto& bias, const auto& weights, int inputs, int outputs) {
+        for (int j = 0; j < outputs; ++j) {
+            int64_t bound = std::abs(int64_t(bias[j]));
+            for (int i = 0; i < inputs; ++i)
+                bound += 127 * std::abs(int64_t(weights[i * outputs + j]));
+            if (bound > std::numeric_limits<int32_t>::max()) return false;
+        }
+        return true;
+    };
+    if (!layerFits(model.midBias, model.midWeights, NNUE::MidInputDimensions, NNUE::HeadDimensions)
+        || !layerFits(model.hiddenBias, model.hiddenWeights, NNUE::HeadDimensions, NNUE::HiddenDimensions))
+        return false;
+    for (int32_t bias : model.bucketBias) {
+        int64_t bound = std::abs(int64_t(model.outputBias[0])) + std::abs(int64_t(bias));
+        for (int8_t weight : model.outputWeights) bound += 127 * std::abs(int64_t(weight));
+        if (bound > std::numeric_limits<int32_t>::max()) return false;
+    }
+    return true;
+}
+
 #ifdef __AVX2__
 std::uint32_t loadLittleEndianU32(const std::uint8_t* bytes) {
     // Reading a uint8_t array through a uint32_t pointer violates C++ strict
@@ -327,7 +329,9 @@ void fullRefreshPerspective(const Position& pos,
     int activeFeatures[32];
     int numFeatures = 0;
 
-    for (int square = 0; square < 64; ++square) {
+    U64 occupied = pos.pieces();
+    while (occupied) {
+        const int square = pop_lsb(&occupied);
         const int piece = pos.piece_board[square];
         if (piece == EMPTY) continue;
 
@@ -471,38 +475,72 @@ bool modelHasThreats() {
 }
 
 bool loadModel(const std::string& path) {
-    ModelState& current = state();
-    current.loaded = false;
-
-    std::optional<fs::path> resolved;
-    if (path == DEFAULT_MODEL_FILE) {
-        resolved = resolveAutoModelPath();
-    } else {
-        resolved = resolveExplicitModelPath(path);
-    }
-
-    if (!resolved.has_value()) {
-        std::cerr << "info string NNUE file not found: " << path << std::endl;
+    // Caller must stop all workers before loading. Failed loads publish nothing.
+    try {
+        ModelState& current = state();
+        const bool distributed = path == DEFAULT_MODEL_FILE || toLowerCopy(path) == "auto";
+        const auto resolved = distributed ? resolveAutoModelPath() : resolveExplicitModelPath(path);
+        if (!resolved) return false;
+        std::ifstream file(*resolved, std::ios::binary | std::ios::ate);
+        if (!file || file.tellg() != static_cast<std::streamoff>(sizeof(ModelHeader) + expectedPayloadBytes()))
+            return false;
+        file.seekg(0);
+        ModelHeader header{};
+        if (!file.read(reinterpret_cast<char*>(&header), sizeof(header))
+            || !headerMatchesArchitecture(header)) return false;
+#ifdef DEEPBECKY_RESOURCE_TEST_HOOKS
+        if (ResourceTestHooks::failModelAllocation == 1) throw std::bad_alloc();
+#endif
+        std::vector<std::uint8_t> payload(static_cast<size_t>(header.payloadBytes));
+        if (!file.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload.size())))
+            return false;
+        if (file.peek() != std::char_traits<char>::eof() || file.bad()) return false;
+        Sha256 digest;
+        digest.update(&header, sizeof(header));
+        digest.update(payload.data(), payload.size());
+        ModelState candidate;
+        candidate.sha256 = digest.finish();
+        if (distributed && candidate.sha256 != DEFAULT_MODEL_SHA256) return false;
+        // Optional trusted sidecar: standard "<hex> [filename]" SHA256 text.
+        const fs::path sidecar = resolved->string() + ".sha256";
+        std::error_code ec;
+        const bool hasSidecar = fs::exists(sidecar, ec);
+        if (ec) return false;
+        if (hasSidecar) {
+            std::ifstream checksum(sidecar);
+            std::string expected;
+            if (!(checksum >> expected) || expected.size() != 64
+                || toLowerCopy(expected) != candidate.sha256) return false;
+        }
+        if (!parsePayload(payload, candidate) || !arithmeticFits(candidate)) return false;
+#ifdef DEEPBECKY_RESOURCE_TEST_HOOKS
+        if (ResourceTestHooks::failModelAllocation == 2) throw std::bad_alloc();
+#endif
+        candidate.path = fs::absolute(*resolved).lexically_normal().string();
+        // All potentially throwing operations completed. Publish model data
+        // through non-throwing swaps, preserving the old model on failure.
+        current.path.swap(candidate.path);
+        current.sha256.swap(candidate.sha256);
+        current.inputBias.swap(candidate.inputBias);
+        current.inputWeights.swap(candidate.inputWeights);
+        current.midBias.swap(candidate.midBias);
+        current.midWeights.swap(candidate.midWeights);
+        current.midWeightsPacked.swap(candidate.midWeightsPacked);
+        current.hiddenBias.swap(candidate.hiddenBias);
+        current.hiddenWeights.swap(candidate.hiddenWeights);
+        current.hiddenWeightsPacked.swap(candidate.hiddenWeightsPacked);
+        current.outputWeights.swap(candidate.outputWeights);
+        current.outputBias.swap(candidate.outputBias);
+        current.bucketBias.swap(candidate.bucketBias);
+        current.header = header;
+        current.hasThreats = candidate.hasThreats;
+        ++current.generation;
+        current.loaded = true;
+        return true;
+    } catch (const std::exception& error) {
+        std::cerr << "info string NNUE replacement rejected: " << error.what() << std::endl;
         return false;
     }
-
-    std::ifstream file(resolved.value(), std::ios::binary);
-    if (!file.is_open()) return false;
-
-    ModelHeader header{};
-    if (!file.read(reinterpret_cast<char*>(&header), sizeof(header))) return false;
-    if (!headerMatchesArchitecture(header)) return false;
-
-    std::vector<std::uint8_t> payload(header.payloadBytes);
-    if (!file.read(reinterpret_cast<char*>(payload.data()), header.payloadBytes)) return false;
-
-    if (!parsePayload(payload, current)) return false;
-
-    current.path = resolved.value().string();
-    current.header = header;
-    current.generation++;
-    current.loaded = true;
-    return true;
 }
 
 void unloadModel() {
@@ -530,18 +568,11 @@ void updateAccumulatorStateAfterMove(const Position& pos, const Move& move, Piec
     state.computed = true;
 }
 
-void setTrainingLogEnabled(bool enabled) { state().trainingEnabled = enabled; }
-void setTrainingLogFile(const std::string& path) { state().trainingLogPath = path; }
-bool trainingLogEnabled() { return state().trainingEnabled; }
-const std::string& trainingLogFile() { return state().trainingLogPath; }
 const ModelHeader& currentHeader() { return state().header; }
 const std::string& currentModelPath() { return state().path; }
+const std::string& currentModelSha256() { return state().sha256; }
 std::string architectureSummary() {
-    return "NNUE v5 Compact (13 King Buckets x 768 x 8 Output Buckets + AVX2 SIMD)";
-}
-
-void logTrainingSample(const Position& pos, const Move& bestMove, int score, int depth, std::uint64_t nodes) {
-    // Optional training data logging
+    return "NNUE v5: 13x704 features, 768 neurons/perspective, 1536->16->32->1, 8 output biases";
 }
 
 int evaluate(Position& pos) {
@@ -640,20 +671,29 @@ int evaluate(Position& pos) {
     __m256i midAcc1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&current.midBias[8]));
     const __m256i ones = _mm256_set1_epi16(1);
 
-    for (int chunk = 0; chunk < MidInputDimensions / 4; ++chunk) {
-        const uint32_t in_val =
-            loadLittleEndianU32(activations.data() + chunk * 4);
-        if (in_val == 0) continue;
+    // Eight four-byte inputs per vector: visit only nonzero groups, in the
+    // original ascending order. No weight/activation layout or arithmetic change.
+    for (int block = 0; block < MidInputDimensions / 4; block += 8) {
+        const __m256i values = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(activations.data() + block * 4));
+        unsigned mask = static_cast<unsigned>(~_mm256_movemask_ps(
+            _mm256_castsi256_ps(_mm256_cmpeq_epi32(values, zero)))) & 255u;
+        while (mask) {
+            const int chunk = block + lsb_index(mask);
+            mask &= mask - 1;
+            const uint32_t in_val =
+                loadLittleEndianU32(activations.data() + chunk * 4);
 
-        __m256i in_vec = _mm256_set1_epi32(static_cast<int32_t>(in_val));
+            __m256i in_vec = _mm256_set1_epi32(static_cast<int32_t>(in_val));
 
-        __m256i mw0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(current.midWeightsPacked.data()) + chunk * 2 + 0);
-        __m256i p0 = _mm256_maddubs_epi16(in_vec, mw0);
-        midAcc0 = _mm256_add_epi32(midAcc0, _mm256_madd_epi16(p0, ones));
+            __m256i mw0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(current.midWeightsPacked.data()) + chunk * 2 + 0);
+            __m256i p0 = _mm256_maddubs_epi16(in_vec, mw0);
+            midAcc0 = _mm256_add_epi32(midAcc0, _mm256_madd_epi16(p0, ones));
 
-        __m256i mw1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(current.midWeightsPacked.data()) + chunk * 2 + 1);
-        __m256i p1 = _mm256_maddubs_epi16(in_vec, mw1);
-        midAcc1 = _mm256_add_epi32(midAcc1, _mm256_madd_epi16(p1, ones));
+            __m256i mw1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(current.midWeightsPacked.data()) + chunk * 2 + 1);
+            __m256i p1 = _mm256_maddubs_epi16(in_vec, mw1);
+            midAcc1 = _mm256_add_epi32(midAcc1, _mm256_madd_epi16(p1, ones));
+        }
     }
 
     // ClippedReLU for Mid layer
@@ -780,8 +820,7 @@ int evaluate(Position& pos) {
     }
 #endif
 
-    int centipawns = static_cast<int>(std::llround(static_cast<long double>(score) * static_cast<long double>(scale) / 8128.0));
-    return std::clamp(centipawns, -32000, 32000);
+    return scaledOutput(score, scale);
 }
 
 } // namespace NNUE

@@ -96,8 +96,7 @@ public:
     explicit TTWriter(TTEntry* entry = nullptr) : entry_(entry) {}
     void save(uint64_t k, int16_t v, bool pv, TTFlag b, int d,
               uint16_t mv, int16_t ev, uint8_t generation8) const noexcept {
-        assert(entry_ != nullptr);
-        entry_->save(k, v, pv, b, d, mv, ev, generation8);
+        if (entry_) entry_->save(k, v, pv, b, d, mv, ev, generation8);
     }
 
 private:
@@ -154,7 +153,7 @@ public:
     TranspositionTable();
     ~TranspositionTable();
 
-    void resize(size_t sizeMB);
+    bool resize(size_t sizeMB);
     void clear();
     void setClearThreadCount(size_t count) { clearThreadCount_ = std::clamp(count, size_t(1), size_t(16)); }
 
@@ -170,6 +169,7 @@ public:
     size_t getClusterCount() const { return clusterCount_; }
     size_t sizeMB() const { return (clusterCount_ * sizeof(TTCluster)) >> 20; }
     void prefetch(uint64_t key) const {
+        if (!table_) return;
 #if defined(__GNUC__) || defined(__clang__)
         __builtin_prefetch(firstEntry(key));
 #elif defined(_MSC_VER)
@@ -190,5 +190,9 @@ private:
 };
 
 extern TranspositionTable TT;
+
+#ifdef DEEPBECKY_RESOURCE_TEST_HOOKS
+namespace ResourceTestHooks { extern bool failTTAllocation; }
+#endif
 
 #endif // DEEPBECKY_TT_HTT_H

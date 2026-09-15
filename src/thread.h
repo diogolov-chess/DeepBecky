@@ -43,7 +43,6 @@ struct alignas(64) SearchThread {
     int16_t pawnHistory[8192][PIECE_NB][64]{}; // [pawnHash][piece][to]
     int16_t captureHistory[PIECE_NB][64][6]{};          // [piece][to][capturedType]
     Move counterMoves[PIECE_NB][64];   // CounterMove heuristic: best quiet reply to (piece, to_sq)
-    PawnEntry pawnTable[PAWN_TT_SIZE]{};
     MovePickerBuffer movePickBuffer[MAX_PLY * 2]{};
 
     // When doing verification search after null move cutoff at high depth,

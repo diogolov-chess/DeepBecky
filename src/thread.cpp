@@ -423,11 +423,6 @@ void SearchThread::idle_loop() {
             if (moveIsNone(bm)) {
                 std::cout << "bestmove 0000" << std::endl;
             } else {
-                if (NNUE::trainingLogEnabled() && !Threads.ponder.load(std::memory_order_relaxed)) {
-                    NNUE::logTrainingSample(bestThread->pos, bm, bestThread->bestScore,
-                                            bestThread->completedDepth, Threads.nodes_searched());
-                }
-
                 // If best thread is not us, print its info line
                 if (bestThread != this && bestThread->completedDepth > 0) {
                     uint64_t totalNodes = Threads.nodes_searched();
@@ -512,8 +507,6 @@ void SearchThread::clear() {
     std::memset(corHist, 0, sizeof(corHist));
     std::memset(nonPawnCorHist, 0, sizeof(nonPawnCorHist));
     std::memset(captureHistory, 0, sizeof(captureHistory));
-    for (int i = 0; i < PAWN_TT_SIZE; ++i)
-        pawnTable[i] = PawnEntry{};
     std::memset(counterMoves, 0, sizeof(counterMoves));
     bestMove = MOVE_NONE;
     bestScore = -INF_SCORE;

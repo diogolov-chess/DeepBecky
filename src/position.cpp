@@ -10,6 +10,7 @@
 #include <random>
 #include <charconv>
 #include <limits>
+#include <stdexcept>
 
 // ========================= Zobrist =========================
 Zobrist::Zobrist() {
@@ -97,7 +98,7 @@ inline void ensureCurrentNNUEState(Position& pos) {
 // ========================= Constructor =========================
 Position::Position() {
     repHistSize = 0;
-    nnueStack.resize(MAX_STACK);
+    nnueStack.resize(MAX_PLY + 1);
     plies_since_null = 0;
     setStartPos();
 }
@@ -436,7 +437,28 @@ std::string Position::toFEN() const {
 }
 
 // ========================= Make/Undo Move =========================
+void Position::consolidateGameRoot() {
+    // UCI never undoes the played prefix. Repetition history remains intact.
+    if (!nnueStack[undoTop].computed ||
+        nnueStack[undoTop].generation != NNUE::modelGeneration())
+        NNUE::refreshAccumulatorState(*this, nnueStack[undoTop]);
+    if (undoTop) nnueStack[0] = nnueStack[undoTop];
+    nnueStack[0].move = MOVE_NONE;
+    nnueStack[0].movedPiece = EMPTY;
+    nnueStack[0].capturedPiece = EMPTY;
+    undoTop = 0;
+}
+
+void Position::ensureUndoCapacity() {
+    if (undoTop + 1 >= MAX_STACK || repHistSize >= MAX_STACK)
+        throw std::length_error("Position history capacity exceeded");
+    const size_t required = static_cast<size_t>(undoTop) + 2;
+    if (required > nnueStack.size())
+        nnueStack.resize(std::min(size_t(MAX_STACK), std::max(required, nnueStack.size() * 2)));
+}
+
 void Position::makeMove(const Move& m) {
+    ensureUndoCapacity();
     ensureCurrentNNUEState(*this);
 
     Undo& u = undoStack[undoTop++];
@@ -644,6 +666,7 @@ void Position::undoMove(const Move& m) {
 
 // ========================= Null Move =========================
 void Position::makeNullMove() {
+    ensureUndoCapacity();
     ensureCurrentNNUEState(*this);
 
     Undo& u = undoStack[undoTop++];
@@ -769,10 +792,6 @@ Move Position::uciToMove(const std::string& s) {
 }
 
 // ========================= Misc =========================
-void Position::clearTT() {
-    TT.clear();
-}
-
 bool Position::timeUp() const {
     // Check global stop flag first (set by other threads or UCI stop)
     if (Threads.stop.load(std::memory_order_relaxed)) return true;
@@ -788,15 +807,6 @@ bool Position::timeUp() const {
             : 0;
     if (time_limit_ms <= 0 && activePoolLimit <= 0) return false;
     return TimeMgr.elapsed() >= TimeMgr.maximum();
-}
-
-void Position::clearHeuristics() {
-    if (thread) {
-        thread->killers.clear();
-        std::memset(thread->history_heur, 0, sizeof(thread->history_heur));
-        std::memset(thread->contHistory, 0, sizeof(thread->contHistory));
-        std::memset(thread->counterMoves, 0, sizeof(thread->counterMoves));
-    }
 }
 
 bool Position::isFiftyMoveDraw(bool isInCheck) {
@@ -842,8 +852,7 @@ bool Position::isInsufficientMaterial() const {
     if (whiteMinor == 1 && blackMinor == 0) return true;
     if (whiteMinor == 0 && blackMinor == 1) return true;
 
-    if (whiteMinor == 1 && blackMinor == 1) {
-        if (whiteBishops == 1 && blackBishops == 1 && whiteKnights == 0 && blackKnights == 0) {
+    if (whiteKnights == 0 && blackKnights == 0) {
             U64 bishops = bitboards[WBISHOP] | bitboards[BBISHOP];
             bool hasLight = false;
             bool hasDark = false;
@@ -853,7 +862,6 @@ bool Position::isInsufficientMaterial() const {
                 else hasDark = true;
             }
             return !(hasLight && hasDark);
-        }
     }
 
     return false;
@@ -862,10 +870,9 @@ bool Position::isInsufficientMaterial() const {
 bool Position::isDraw(int ply, bool isInCheck) {
     if (isFiftyMoveDraw(isInCheck)) return true;
     if (isThreefoldRepetition(ply)) return true;
-    // Skip expensive isInsufficientMaterial in most cases
-    // Only check if very few pieces remain (fast check first)
-    int pieceCount = popcount(color_bitboards[WHITE] | color_bitboards[BLACK]);
-    if (pieceCount <= 4 && isInsufficientMaterial()) return true;
+    // The detector exits immediately on pawns/majors; promoted bishops may
+    // produce dead positions with more than four pieces.
+    if (isInsufficientMaterial()) return true;
     return false;
 }
 

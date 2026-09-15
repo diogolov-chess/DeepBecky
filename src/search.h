@@ -23,6 +23,14 @@ struct SearchStack {
 // Search options and tunable parameters
 namespace Search {
 
+// Preserve the original update/truncation at defaults without signed overflow
+// for combinations of accepted UCI parameters.
+inline int16_t correctionUpdate(int16_t entry, int bonus, int divisor, int weight) {
+  const int64_t target = int64_t(bonus) * divisor / 2;
+  const int64_t value = entry + int64_t(weight) * (target - entry) / 16384;
+  return static_cast<int16_t>(std::clamp<int64_t>(value, -32767, 32767));
+}
+
 namespace Tune {
 // ==========================================
 // Batch 1 - Basic Pruning & Extension Margins
